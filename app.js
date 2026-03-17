@@ -40,6 +40,9 @@ let effects         = [];
 let lastEffectTime  = -1;
 const spawnedKeys   = new Set();
 
+let inferenceData  = null;  // loaded per-map, cross-match bot data
+const inferenceCache = {};  // mapName → parsed JSON (session cache)
+
 // Storm lightning particles (persistent, regenerated each frame based on now)
 const STORM_BOLTS = 12;
 
@@ -66,6 +69,9 @@ const togHeatmap = document.getElementById("toggle-heatmap");
 const togBots    = document.getElementById("toggle-bots");
 const togHumans  = document.getElementById("toggle-humans");
 const togStorm   = document.getElementById("toggle-storm");
+const togInfer   = document.getElementById("toggle-infer");
+const inferWrap  = document.getElementById("infer-toggle-wrap");
+const inferBadge = document.getElementById("infer-badge");
 
 const filterMap  = document.getElementById("filter-map");
 const filterDay  = document.getElementById("filter-day");
@@ -155,7 +161,13 @@ async function loadMatch(id) {
   spawnedKeys.clear();
 
   mapImage = await loadImage(MAP_IMAGES[currentMatch.meta.map]);
+  await loadInferenceData(currentMatch.meta.map);
   buildPlayerPositions();
+
+  // Auto-enable inference layer when match has bot kills but no bot telemetry
+  const shouldInfer = currentMatch.meta.bots === 0 && currentMatch.meta.bot_kills > 0;
+  togInfer.checked = shouldInfer;
+  updateInferBadge();
 
   emptyState.classList.add("hidden");
   topbar.classList.remove("hidden");
@@ -444,6 +456,7 @@ function draw(now) {
 
   // Map background
   ctx.drawImage(mapImage, 0, 0, MAP_SIZE, MAP_SIZE);
+  drawInference();
 
   if (togHeatmap.checked) {
     drawHeatmap();
@@ -953,6 +966,87 @@ function updateTimeLabel(t) {
 // ── Layer toggles ─────────────────────────────────────────────────────────────
 [togPaths, togEvents, togHeatmap, togBots, togHumans, togStorm].forEach(el =>
   el.addEventListener("change", draw));
+togInfer.addEventListener("change", () => { updateInferBadge(); draw(); });
+
+// ── Inference layer ───────────────────────────────────────────────────────────
+async function loadInferenceData(mapName) {
+  if (inferenceCache[mapName]) { inferenceData = inferenceCache[mapName]; return; }
+  try {
+    const res = await fetch(`data/inference/${mapName}.json`);
+    if (!res.ok) { inferenceData = null; return; }
+    inferenceCache[mapName] = await res.json();
+    inferenceData = inferenceCache[mapName];
+  } catch { inferenceData = null; }
+}
+
+function updateInferBadge() {
+  inferBadge.classList.toggle("hidden", !togInfer.checked);
+}
+
+function drawInference() {
+  if (!inferenceData || !togInfer || !togInfer.checked) return;
+  const inf = inferenceData;
+  ctx.save();
+
+  // ── 1. Cross-match bot heatmap (cool blue-slate palette, distinct from red heatmap) ──
+  const { cells, max: maxH, grid: GRID } = inf.heatmap;
+  const CELL = MAP_SIZE / GRID;
+  for (const [gx, gy, n] of cells) {
+    const t   = Math.sqrt(n / maxH);
+    const cx2 = (gx + 0.5) * CELL;
+    const cy2 = (gy + 0.5) * CELL;
+    const r   = CELL * 2.2;
+    const g   = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, r);
+    if (t > 0.55) {
+      g.addColorStop(0,   `rgba(180,230,255,${t * 0.55})`);
+      g.addColorStop(0.3, `rgba(70,150,220,${t * 0.38})`);
+      g.addColorStop(0.7, `rgba(20,70,160,${t * 0.18})`);
+      g.addColorStop(1,   "rgba(10,40,100,0)");
+    } else {
+      g.addColorStop(0,   `rgba(50,120,200,${t * 0.4})`);
+      g.addColorStop(0.6, `rgba(20,70,160,${t * 0.18})`);
+      g.addColorStop(1,   "rgba(10,40,100,0)");
+    }
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ── 2. Patrol route ghost paths (amber, very low opacity dashed) ─────────────
+  ctx.lineJoin  = "round";
+  ctx.lineCap   = "round";
+  ctx.lineWidth = 0.8 / vp.scale;
+  ctx.setLineDash([4 / vp.scale, 4 / vp.scale]);
+  for (const route of inf.routes) {
+    if (route.length < 2) continue;
+    ctx.strokeStyle = "rgba(255,213,79,0.07)";
+    ctx.beginPath();
+    ctx.moveTo(route[0][0], route[0][1]);
+    for (let i = 1; i < route.length; i++) ctx.lineTo(route[i][0], route[i][1]);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // ── 3. Kill uncertainty circles (dotted amber rings at each visible BotKill) ──
+  const engageR = inf.engage_px;
+  ctx.strokeStyle = "rgba(255,213,79,0.4)";
+  ctx.lineWidth   = 0.9 / vp.scale;
+  ctx.setLineDash([3 / vp.scale, 3 / vp.scale]);
+  for (const e of currentMatch.events) {
+    if (e.ev !== "BotKill" || e.t > currentTime) continue;
+    const kx = e.kpx ?? e.px;
+    const ky = e.kpy ?? e.py;
+    if (kx == null) continue;
+    ctx.beginPath(); ctx.arc(kx, ky, engageR, 0, Math.PI * 2); ctx.stroke();
+    // Small dot at centre to anchor the circle
+    ctx.fillStyle = "rgba(255,213,79,0.5)";
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(kx, ky, 2 / vp.scale, 0, Math.PI * 2); ctx.fill();
+    ctx.setLineDash([3 / vp.scale, 3 / vp.scale]);
+  }
+  ctx.setLineDash([]);
+
+  ctx.restore();
+}
 
 // ── Legend ────────────────────────────────────────────────────────────────────
 function buildLegend() {
@@ -970,6 +1064,9 @@ function buildLegend() {
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.storm}" stroke-width="0.8" opacity="0.6"/></svg></div>Storm death</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,2 16,9 9,16 2,9" fill="${C.loot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/><polygon points="9,4 13,9 9,10" fill="rgba(255,255,255,0.4)"/></svg></div>Loot</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(80,0,120,0.5)" stroke="rgba(200,100,255,0.9)" stroke-width="1.5" stroke-dasharray="3,2"/></svg></div>Storm zone</div>
+    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(30,80,180,0.35)" stroke="rgba(100,180,255,0.5)" stroke-width="1"/></svg></div><span style="color:#ffd54f">~ Bot density</span></div>
+    <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="rgba(255,213,79,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/></svg></div><span style="color:#ffd54f">~ Patrol routes</span></div>
+    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="none" stroke="rgba(255,213,79,0.6)" stroke-width="1" stroke-dasharray="3,3"/><circle cx="9" cy="9" r="1.5" fill="rgba(255,213,79,0.7)"/></svg></div><span style="color:#ffd54f">~ Kill range</span></div>
   `;
   wrap.appendChild(leg);
 }

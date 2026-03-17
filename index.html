@@ -66,6 +66,9 @@
         <label class="toggle"><input type="checkbox" id="toggle-bots"   checked /> Bots</label>
         <label class="toggle"><input type="checkbox" id="toggle-humans" checked /> Humans</label>
         <label class="toggle"><input type="checkbox" id="toggle-storm" checked /> Storm</label>
+        <label class="toggle toggle-infer" id="infer-toggle-wrap" title="Inferred bot positions from cross-match analysis. Not real data.">
+          <input type="checkbox" id="toggle-infer" /> <span>~ Bots</span>
+        </label>
         <div class="layer-divider"></div>
         <div id="zoom-controls">
           <button id="btn-zoom-in"  title="Zoom in">+</button>
@@ -87,6 +90,8 @@
 
       <!-- Player popup (injected into canvas-wrap) -->
       <div id="player-popup" class="hidden"></div>
+      <!-- Inference layer badge -->
+      <div id="infer-badge" class="hidden">~ INFERRED BOT DATA &nbsp;·&nbsp; Cross-match analysis from real matches</div>
 
       <!-- Timeline -->
       <div id="timeline" class="hidden">
