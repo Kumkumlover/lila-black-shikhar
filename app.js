@@ -15,7 +15,9 @@ const STORM_END_R   = 80;
 const C = {
   human:  "#4fc3f7", humanDim: "rgba(79,195,247,0.35)",
   bot:    "#ef5350", botDim:   "rgba(239,83,80,0.25)",
+  agent:  "#ffd54f",                                     // amber — test agent
   kill:   "#ff9800", loot: "#66bb6a", storm: "#ce93d8", death: "#f44336",
+  pvp:    "#ffffff",                                     // white — rare PvP kill
 };
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -99,14 +101,16 @@ function renderMatchList() {
     const dur = fmtTime(m.duration);
     const day = m.day.replace("February_", "Feb ");
     // Suspicious: died to bots >> bot kills (ratio > 2.5)
-    const suspicious = m.bot_killed > 0 && m.bot_kills === 0 && m.bot_killed > 3;
+    const suspicious = m.bot_kills === 0 && m.bot_killed > 3;
+  const hasAgent   = m.agents > 0;
+    const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
     return `<li data-id="${m.id}" ${suspicious ? 'style="border-left-color:#ff9800"' : ''}>
       <div class="match-title">
         <span class="match-map-tag tag-${m.map}">${shortMap(m.map)}</span>
-        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">⚠</span>' : ''}
+        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}
       </div>
       <div class="match-meta">
-        ${day} · ${dur} · <b>${m.total_events}</b> ev · H:<b>${m.humans}</b> B:<b>${m.bots}</b>
+        ${day} · ${dur} · <b>${m.total_events}</b> ev · H:<b>${m.humans}</b>${m.agents > 0 ? ` A:<b style="color:${C.agent}">${m.agents}</b>` : ""} B:<b>${m.bots}</b>
       </div>
     </li>`;
   }).join("");
@@ -167,14 +171,18 @@ async function loadMatch(id) {
 
   infoTitle.innerHTML =
     `${m.map.replace("AmbroseValley","Ambrose Valley")} · ${m.day.replace("February_","Feb ")} · ${m.id.slice(0,8)}` + suspTag;
+  const agentTag = m.agents > 0
+    ? `<span class="stat-sep">|</span>Agents: <b style="color:${C.agent}">${m.agents}</b>` : "";
+  const pvpTag = m.pvp_kills > 0
+    ? `<span class="stat-sep">|</span><b style="color:#fff">PvP: ${m.pvp_kills}</b>` : "";
   infoStats.innerHTML =
     `Duration: <b>${fmtTime(m.duration)}</b><span class="stat-sep">|</span>` +
     `Events: <b>${m.total_events}</b><span class="stat-sep">|</span>` +
-    `Humans: <b>${m.humans}</b><span class="stat-sep">|</span>` +
+    `Humans: <b>${m.humans}</b>${agentTag}<span class="stat-sep">|</span>` +
     `Bots: <b>${m.bots}</b><span class="stat-sep">|</span>` +
     `BotKills: <b>${m.bot_kills}</b><span class="stat-sep">|</span>` +
     `Died to bots: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
-    `Loot: <b>${m.loot}</b>`;
+    `Loot: <b>${m.loot}</b>${pvpTag}`;
 
   scrubber.max   = m.duration;
   scrubber.value = 0;
@@ -192,8 +200,12 @@ function buildPlayerPositions() {
     if (e.ev !== "Position" && e.ev !== "BotPosition") continue;
     if (e.px == null) continue;
     if (!playerPositions[e.uid]) playerPositions[e.uid] = [];
-    playerPositions[e.uid].push({ t: e.t, px: e.px, py: e.py, human: e.human });
+    playerPositions[e.uid].push({ t: e.t, px: e.px, py: e.py, type: e.type });
   }
+}
+
+function colorForType(type) {
+  return type === "human" ? C.human : type === "agent" ? C.agent : C.bot;
 }
 
 function loadImage(src) {
@@ -454,25 +466,25 @@ function draw(now) {
 // ── Paths ──────────────────────────────────────────────────────────────────────
 function drawPaths() {
   for (const uid of Object.keys(playerPositions)) {
-    const pts     = playerPositions[uid];
+    const pts  = playerPositions[uid];
     if (!pts || pts.length < 2) continue;
-    const isHuman = pts[0].human;
-    if (isHuman && !togHumans.checked) continue;
-    if (!isHuman && !togBots.checked) continue;
+    const type = pts[0].type;                            // "human"|"bot"|"agent"
+    if (type === "human" && !togHumans.checked) continue;
+    if (type !== "human" && !togBots.checked)  continue;
 
     const lastPing = pts[pts.length - 1].t;
     const isActive = currentTime - lastPing <= 15;
     const visible  = pts.filter(p => p.t <= currentTime);
     if (visible.length < 2) continue;
-    // Dim trail if player already left the match
-    if (!isActive) { ctx.globalAlpha = isHuman ? 0.25 : 0.12; }
 
+    const col = colorForType(type);
     ctx.beginPath();
-    ctx.strokeStyle = isHuman ? C.human : C.bot;
-    ctx.lineWidth   = isHuman ? (1.8 / vp.scale) : (0.9 / vp.scale);
-    ctx.globalAlpha = isHuman ? 0.85 : 0.35;
+    ctx.strokeStyle = col;
+    ctx.lineWidth   = type === "human" ? (1.8 / vp.scale) : type === "agent" ? (1.4 / vp.scale) : (0.9 / vp.scale);
+    ctx.globalAlpha = type === "human" ? 0.85 : type === "agent" ? 0.7 : 0.35;
     ctx.lineJoin    = "round";
     ctx.lineCap     = "round";
+    if (!isActive) ctx.globalAlpha *= 0.35;   // dim trail after disconnect
     ctx.moveTo(visible[0].px, visible[0].py);
     for (let i = 1; i < visible.length; i++) ctx.lineTo(visible[i].px, visible[i].py);
     ctx.stroke();
@@ -489,17 +501,37 @@ function drawEventMarkers() {
   );
   const R = 5 / vp.scale;
   for (const e of visible) {
-    if (e.human && !togHumans.checked) continue;
-    if (!e.human && !togBots.checked) continue;
+    if (e.type === "human" && !togHumans.checked) continue;
+    if (e.type !== "human" && !togBots.checked)  continue;
     ctx.globalAlpha = 0.85;
+    // Use midpoint kill coords (kpx/kpy) when available, else killer position
+    const mx = (e.ev === "BotKill" && e.kpx != null) ? e.kpx : e.px;
+    const my = (e.ev === "BotKill" && e.kpy != null) ? e.kpy : e.py;
     switch (e.ev) {
-      case "Kill": case "BotKill":     drawSkull(e.px, e.py, R); break;
+      case "Kill":      drawPvPKill(mx, my, R * 1.2); break;   // rare — white starburst
+      case "BotKill":   drawSkull(mx, my, R); break;            // common bot kill
       case "Killed": case "BotKilled": drawDeathX(e.px, e.py, R, C.death); break;
-      case "KilledByStorm":            drawDeathX(e.px, e.py, R, C.storm); break;
-      case "Loot":                     drawLootDiamond(e.px, e.py, R * 0.85); break;
+      case "KilledByStorm": drawDeathX(e.px, e.py, R, C.storm); break;
+      case "Loot":      drawLootDiamond(e.px, e.py, R * 0.85); break;
     }
   }
   ctx.globalAlpha = 1;
+}
+
+// PvP kill: rare event — distinct white starburst so it stands out from BotKills
+function drawPvPKill(x, y, r) {
+  ctx.fillStyle   = C.pvp;
+  ctx.strokeStyle = "#ff9800";
+  ctx.lineWidth   = 1 / vp.scale;
+  const spikes = 6;
+  ctx.beginPath();
+  for (let i = 0; i < spikes * 2; i++) {
+    const ang = (i * Math.PI) / spikes - Math.PI / 2;
+    const rad = i % 2 === 0 ? r : r * 0.45;
+    i === 0 ? ctx.moveTo(x + Math.cos(ang)*rad, y + Math.sin(ang)*rad)
+            : ctx.lineTo(x + Math.cos(ang)*rad, y + Math.sin(ang)*rad);
+  }
+  ctx.closePath(); ctx.fill(); ctx.stroke();
 }
 
 function drawSkull(x, y, r) {
@@ -541,31 +573,43 @@ function drawLootDiamond(x, y, r) {
 // ── Live dots ─────────────────────────────────────────────────────────────────
 function drawLiveDots() {
   for (const uid of Object.keys(playerPositions)) {
-    const pts = playerPositions[uid];
+    const pts  = playerPositions[uid];
     if (!pts || !pts.length) continue;
-    const isHuman = pts[0].human;
-    if (isHuman && !togHumans.checked) continue;
-    if (!isHuman && !togBots.checked) continue;
+    const type = pts[0].type;
+    if (type === "human" && !togHumans.checked) continue;
+    if (type !== "human" && !togBots.checked)  continue;
     if (pts[0].t > currentTime) continue;
 
     const lastPing = pts[pts.length - 1].t;
-    // Hide dot if player's last position ping was >15s ago — they left the match
-    if (currentTime - lastPing > 15) continue;
+    if (currentTime - lastPing > 15) continue;   // ghost dot handles this range
 
     const pos = interpolatePosition(uid, currentTime);
     if (!pos) continue;
-    const r = (isHuman ? 5 : 3.5) / vp.scale;
+    const col = colorForType(type);
+    const r   = (type === "human" ? 5 : type === "agent" ? 4.5 : 3.5) / vp.scale;
 
-    if (isHuman) {
+    if (type !== "bot") {
+      // Human / agent: glowing dot with halo
+      const [cr, cg, cb] = type === "human" ? [79,195,247] : [255,213,79];
       const grad = ctx.createRadialGradient(pos.px, pos.py, r, pos.px, pos.py, r * 3.5);
-      grad.addColorStop(0, "rgba(79,195,247,0.3)");
-      grad.addColorStop(1, "rgba(79,195,247,0)");
+      grad.addColorStop(0, `rgba(${cr},${cg},${cb},0.3)`);
+      grad.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
       ctx.fillStyle = grad;
       ctx.beginPath(); ctx.arc(pos.px, pos.py, r * 3.5, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle   = "#fff";
-      ctx.strokeStyle = C.human;
+      ctx.fillStyle   = type === "human" ? "#fff" : C.agent;
+      ctx.strokeStyle = col;
       ctx.lineWidth   = 1.5 / vp.scale;
       ctx.beginPath(); ctx.arc(pos.px, pos.py, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      // Agent: draw a small diamond overlay to distinguish from human
+      if (type === "agent") {
+        ctx.strokeStyle = "rgba(0,0,0,0.6)";
+        ctx.lineWidth   = 0.6 / vp.scale;
+        const d = r * 0.55;
+        ctx.beginPath();
+        ctx.moveTo(pos.px, pos.py - d); ctx.lineTo(pos.px + d, pos.py);
+        ctx.lineTo(pos.px, pos.py + d); ctx.lineTo(pos.px - d, pos.py);
+        ctx.closePath(); ctx.stroke();
+      }
     } else {
       ctx.fillStyle   = C.bot;
       ctx.globalAlpha = 0.7;
@@ -580,11 +624,11 @@ function drawLiveDots() {
 // ── Ghost dots: last-known position for players whose telemetry ended ──────────
 function drawGhostDots() {
   for (const uid of Object.keys(playerPositions)) {
-    const pts = playerPositions[uid];
+    const pts  = playerPositions[uid];
     if (!pts || !pts.length) continue;
-    const isHuman = pts[0].human;
-    if (isHuman && !togHumans.checked) continue;
-    if (!isHuman && !togBots.checked) continue;
+    const type = pts[0].type;
+    if (type === "human" && !togHumans.checked) continue;
+    if (type !== "human" && !togBots.checked)  continue;
 
     const firstT   = pts[0].t;
     const lastPing = pts[pts.length - 1].t;
@@ -592,12 +636,12 @@ function drawGhostDots() {
     if (currentTime - lastPing <= 15) continue;  // still active — live dot handles it
 
     const last = pts[pts.length - 1];
-    const r = (isHuman ? 4.5 : 3) / vp.scale;
+    const r = (type === "bot" ? 3 : 4.5) / vp.scale;
 
     // Dashed ghost circle
     ctx.save();
     ctx.globalAlpha = 0.3;
-    ctx.strokeStyle = isHuman ? C.human : C.bot;
+    ctx.strokeStyle = colorForType(type);
     ctx.lineWidth   = 1 / vp.scale;
     ctx.setLineDash([3 / vp.scale, 2.5 / vp.scale]);
     ctx.beginPath(); ctx.arc(last.px, last.py, r * 1.6, 0, Math.PI * 2); ctx.stroke();
@@ -605,7 +649,7 @@ function drawGhostDots() {
 
     // Small filled centre
     ctx.globalAlpha = 0.2;
-    ctx.fillStyle   = isHuman ? C.human : C.bot;
+    ctx.fillStyle   = colorForType(type);
     ctx.beginPath(); ctx.arc(last.px, last.py, r * 0.6, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
@@ -651,15 +695,16 @@ function handleCanvasClick(screenX, screenY) {
 
 function showPlayerPopup(uid, sx, sy) {
   const pts      = playerPositions[uid];
-  const isHuman  = pts[0].human;
+  const type     = pts[0].type;
   const stats    = getPlayerStats(uid);
   const lastPing = pts[pts.length - 1].t;
   const isActive = currentTime - lastPing <= 15;
   const shortId  = String(uid).length > 20 ? String(uid).slice(0, 13) + "…" : uid;
+  const label    = type === "human" ? "&#128100; Human" : type === "agent" ? "&#9888; Test Agent" : "&#129302; Bot";
 
   playerPopup.innerHTML = `
-    <div class="popup-header ${isHuman ? "human" : "bot"}">
-      ${isHuman ? "&#128100; Human" : "&#129302; Bot"}
+    <div class="popup-header ${type}">
+      ${label}
       <span class="popup-id">${shortId}</span>
     </div>
     <div class="popup-stats">
@@ -694,8 +739,8 @@ function drawHeatmap() {
   const grid = new Float32Array(GRID * GRID);
   let maxVal = 0;
   for (const e of positions) {
-    if (e.human && !togHumans.checked) continue;
-    if (!e.human && !togBots.checked) continue;
+    if (e.type === "human" && !togHumans.checked) continue;
+    if (e.type !== "human" && !togBots.checked)  continue;
     const gx = Math.min(GRID-1, Math.floor(e.px / CELL));
     const gy = Math.min(GRID-1, Math.floor(e.py / CELL));
     const v  = ++grid[gy * GRID + gx];
@@ -916,9 +961,11 @@ function buildLegend() {
   leg.innerHTML = `
     <h4>Legend</h4>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.human}" stroke-width="2.5" stroke-linecap="round"/></svg></div>Human path</div>
+    <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.agent}" stroke-width="2" stroke-linecap="round" stroke-dasharray="4,2"/></svg></div>Test agent path</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.bot}" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot path</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5" fill="white" stroke="${C.human}" stroke-width="1.5"/><circle cx="9" cy="9" r="8" fill="none" stroke="${C.human}" stroke-width="0.8" opacity="0.4"/></svg></div>Player position</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.5" fill="${C.kill}"/><line x1="5.5" y1="5.5" x2="12.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/><line x1="12.5" y1="5.5" x2="5.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/></svg></div>Kill event</div>
+    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,1 10.8,6.5 17,6.5 11.9,10 13.7,15.5 9,12 4.3,15.5 6.1,10 1,6.5 7.2,6.5" fill="${C.pvp}" stroke="#ff9800" stroke-width="0.8"/></svg></div>PvP kill (rare)</div>
+    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.5" fill="${C.kill}"/><line x1="5.5" y1="5.5" x2="12.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/><line x1="12.5" y1="5.5" x2="5.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot kill</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.death}" stroke-width="0.8" opacity="0.6"/></svg></div>Death</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.storm}" stroke-width="0.8" opacity="0.6"/></svg></div>Storm death</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,2 16,9 9,16 2,9" fill="${C.loot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/><polygon points="9,4 13,9 9,10" fill="rgba(255,255,255,0.4)"/></svg></div>Loot</div>

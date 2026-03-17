@@ -248,8 +248,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   padding-bottom: 6px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; gap: 6px;
 }
-.popup-header.human { color: var(--human); }
-.popup-header.bot   { color: var(--bot); }
+.popup-header.human  { color: var(--human); }
+.popup-header.bot    { color: var(--bot); }
+.popup-header.agent  { color: #ffd54f; }
 .popup-id { font-size: 9px; color: var(--muted); font-weight: 400; font-family: monospace; }
 .popup-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 12px; }
 .popup-stats div { color: var(--muted2); }
