@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LILA BLACK — Player Journey Visualizer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- ── Sidebar ── -->
+    <aside id="sidebar">
+      <div id="logo">
+        <span class="logo-lila">LILA</span><span class="logo-black">BLACK</span>
+        <span class="logo-sub">Player Journey Visualizer</span>
+      </div>
+
+      <section class="panel" id="filters">
+        <h3>Filters</h3>
+        <label>Map
+          <select id="filter-map">
+            <option value="">All Maps</option>
+            <option value="AmbroseValley">Ambrose Valley</option>
+            <option value="GrandRift">Grand Rift</option>
+            <option value="Lockdown">Lockdown</option>
+          </select>
+        </label>
+        <label>Day
+          <select id="filter-day">
+            <option value="">All Days</option>
+            <option value="February_10">Feb 10</option>
+            <option value="February_11">Feb 11</option>
+            <option value="February_12">Feb 12</option>
+            <option value="February_13">Feb 13</option>
+            <option value="February_14">Feb 14</option>
+          </select>
+        </label>
+        <label>Sort by
+          <select id="filter-sort">
+            <option value="total_events">Most Events</option>
+            <option value="duration">Longest</option>
+            <option value="bot_kills">Most Bot Kills</option>
+            <option value="loot">Most Loot</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="panel" id="match-list-panel">
+        <h3>Matches <span id="match-count"></span></h3>
+        <ul id="match-list"></ul>
+      </section>
+    </aside>
+
+    <!-- ── Main ── -->
+    <main id="main">
+
+      <!-- Top bar: info + layers + zoom -->
+      <div id="topbar" class="hidden">
+        <div id="info-title"></div>
+        <div id="info-stats"></div>
+        <div class="layer-divider"></div>
+        <label class="toggle"><input type="checkbox" id="toggle-paths"  checked /> Paths</label>
+        <label class="toggle"><input type="checkbox" id="toggle-events" checked /> Events</label>
+        <label class="toggle"><input type="checkbox" id="toggle-heatmap" /> Heatmap</label>
+        <label class="toggle"><input type="checkbox" id="toggle-bots"   checked /> Bots</label>
+        <label class="toggle"><input type="checkbox" id="toggle-humans" checked /> Humans</label>
+        <label class="toggle"><input type="checkbox" id="toggle-storm" checked /> Storm</label>
+        <div class="layer-divider"></div>
+        <div id="zoom-controls">
+          <button id="btn-zoom-in"  title="Zoom in">+</button>
+          <span id="zoom-label">100%</span>
+          <button id="btn-zoom-out" title="Zoom out">−</button>
+          <button id="btn-zoom-fit" title="Fit map" style="font-size:10px;width:auto;padding:0 6px;">Fit</button>
+        </div>
+      </div>
+
+      <!-- Canvas -->
+      <div id="canvas-wrap">
+        <div id="empty-state">
+          <div class="empty-icon">🗺</div>
+          <p>Select a match to begin</p>
+        </div>
+        <canvas id="map-canvas"></canvas>
+        <!-- Legend injected by JS -->
+      </div>
+
+      <!-- Player popup (injected into canvas-wrap) -->
+      <div id="player-popup" class="hidden"></div>
+
+      <!-- Timeline -->
+      <div id="timeline" class="hidden">
+        <button id="btn-prev" title="Previous match">&#8249;</button>
+        <button id="btn-play">▶</button>
+        <button id="btn-next" title="Next match">&#8250;</button>
+        <div class="timeline-track">
+          <input type="range" id="scrubber" min="0" max="100" value="0" step="1" />
+          <div id="event-markers"></div>
+        </div>
+        <span id="time-label">0:00 / 0:00</span>
+        <div class="speed-wrap">
+          Speed:
+          <select id="playback-speed">
+            <option value="1">1×</option>
+            <option value="2">2×</option>
+            <option value="5" selected>5×</option>
+            <option value="10">10×</option>
+          </select>
+        </div>
+      </div>
+
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
