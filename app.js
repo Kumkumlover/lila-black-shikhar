@@ -131,7 +131,9 @@ const atogMovement = document.getElementById("atog-movement");
 const atogKills    = document.getElementById("atog-kills");
 const atogDeaths   = document.getElementById("atog-deaths");
 const atogLoot     = document.getElementById("atog-loot");
+const atogDwell    = document.getElementById("atog-dwell");
 const atogExtract  = document.getElementById("atog-extract");
+const homeView     = document.getElementById("home-view");
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -141,6 +143,7 @@ async function init() {
   buildLegend();
   [filterMap, filterDay, filterSort, filterOutcome].forEach(el =>
     el.addEventListener("change", renderMatchList));
+  showHome();
 }
 
 // ── Match list ────────────────────────────────────────────────────────────────
@@ -207,6 +210,7 @@ async function loadMatch(id) {
   stopPlayback();
   stopAmbient();
   hidePlayerPopup();
+  hideHome();
   currentMatchId = id;
   updateNavButtons();
   matchList.querySelectorAll("li").forEach(li =>
@@ -1231,6 +1235,282 @@ function drawInference() {
   ctx.restore();
 }
 
+// ── Home / Dashboard ─────────────────────────────────────────────────────────
+function showHome() {
+  if (!allMatches.length) return;
+  stopPlayback();
+  hidePlayerPopup();
+  emptyState.classList.add("hidden");
+  topbar.classList.add("hidden");
+  timeline.classList.add("hidden");
+  analysisControls.classList.add("hidden");
+  wrap.style.display = "none";
+  homeView.classList.remove("hidden");
+  if (!homeView.dataset.built) buildHomeView();
+}
+
+function hideHome() {
+  homeView.classList.add("hidden");
+  wrap.style.display = "";
+}
+
+function buildHomeView() {
+  homeView.dataset.built = "1";
+  const M  = allMatches;
+  const N  = M.length;
+  const totalSecs     = M.reduce((s, m) => s + m.duration, 0);
+  const totalBotKills = M.reduce((s, m) => s + m.bot_kills, 0);
+  const diedCount     = M.filter(m => m.outcome === "died").length;
+  const survPct       = Math.round((N - diedCount) / N * 100);
+
+  const MAPS = ["AmbroseValley", "GrandRift", "Lockdown"];
+  const ML   = { AmbroseValley: "Ambrose Valley", GrandRift: "Grand Rift", Lockdown: "Lockdown" };
+  const DAYS = ["February_10","February_11","February_12","February_13","February_14"];
+  const DL   = ["Feb 10","Feb 11","Feb 12","Feb 13","Feb 14"];
+
+  // Per-map stats
+  const mapStats = {};
+  for (const mp of MAPS) {
+    const ms = M.filter(m => m.map === mp);
+    const n  = ms.length || 1;
+    mapStats[mp] = {
+      count:     ms.length,
+      died:      ms.filter(m => m.outcome === "died").length,
+      survived:  ms.filter(m => m.outcome === "survived").length,
+      extracted: ms.filter(m => m.outcome === "extracted").length,
+      ragequit:  ms.filter(m => m.outcome === "ragequit").length,
+      avgDur:    ms.reduce((s,m) => s + m.duration, 0) / n,
+      avgBotKills: ms.reduce((s,m) => s + m.bot_kills, 0) / n,
+      zeroPct:   ms.filter(m => m.bot_kills === 0).length / n * 100,
+    };
+  }
+
+  // Duration histogram (2-min bins: 0–2, 2–4, … 12–14, 14+)
+  const binCount = 8;
+  const bins = new Array(binCount).fill(0);
+  const binL  = ["0–2","2–4","4–6","6–8","8–10","10–12","12–14","14+"];
+  for (const m of M) bins[Math.min(binCount - 1, Math.floor(m.duration / 120))]++;
+
+  // Per-day stats
+  const dayStats = DAYS.map(d => {
+    const ms = M.filter(m => m.day === d);
+    const n  = ms.length || 1;
+    return { count: ms.length, survPct: Math.round(ms.filter(m => m.outcome !== "died").length / n * 100) };
+  });
+
+  // ── SVG helpers ──────────────────────────────────────────────────────────
+  const GP = { t: 14, r: 8, b: 24, l: 10 };  // chart padding
+
+  function svgBars(vals, labels, color, W, H) {
+    const max = Math.max(...vals, 1);
+    const aw  = W - GP.l - GP.r;
+    const ah  = H - GP.t - GP.b;
+    const bw  = aw / vals.length * 0.62;
+    const gap = aw / vals.length;
+    let s = `<svg width="${W}" height="${H}" style="display:block;overflow:visible">`;
+    vals.forEach((v, i) => {
+      const bh = (v / max) * ah;
+      const x  = GP.l + i * gap + (gap - bw) / 2;
+      const y  = GP.t + ah - bh;
+      s += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(bh, 1).toFixed(1)}" fill="${color}" rx="2"/>`;
+      s += `<text x="${(x+bw/2).toFixed(1)}" y="${(H-GP.b+14).toFixed(1)}" text-anchor="middle" fill="#555" font-size="8" font-family="monospace">${labels[i]}</text>`;
+      if (v > 0) s += `<text x="${(x+bw/2).toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="middle" fill="#999" font-size="8" font-family="monospace">${v}</text>`;
+    });
+    s += `</svg>`;
+    return s;
+  }
+
+  function svgLine(vals, labels, color, W, H, suffix = "") {
+    const max  = Math.max(...vals, 1);
+    const aw   = W - GP.l - GP.r;
+    const ah   = H - GP.t - GP.b;
+    const step = aw / Math.max(vals.length - 1, 1);
+    const pts  = vals.map((v, i) => {
+      const x = GP.l + i * step;
+      const y = GP.t + ah * (1 - v / max);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(" ");
+    let s = `<svg width="${W}" height="${H}" style="display:block;overflow:visible">`;
+    s += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
+    vals.forEach((v, i) => {
+      const x = GP.l + i * step;
+      const y = GP.t + ah * (1 - v / max);
+      s += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3" fill="${color}"/>`;
+      s += `<text x="${x.toFixed(1)}" y="${(H-GP.b+14).toFixed(1)}" text-anchor="middle" fill="#555" font-size="8" font-family="monospace">${labels[i]}</text>`;
+      s += `<text x="${x.toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" fill="#ccc" font-size="9" font-family="monospace">${v}${suffix}</text>`;
+    });
+    s += `</svg>`;
+    return s;
+  }
+
+  function svgStackedHBars(rows, W, H) {
+    const COLORS = { died:"#ef5350", survived:"#66bb6a", extracted:"#26c6da", ragequit:"#ffa726" };
+    const CATS   = ["died","survived","extracted","ragequit"];
+    const maxV   = Math.max(...rows.map(r => r.count));
+    const labelW = 44;
+    const avail  = W - labelW - 36;
+    const rh     = 26;
+    const gap    = 10;
+    let s = `<svg width="${W}" height="${rows.length * (rh + gap) - gap + 4}" style="display:block">`;
+    rows.forEach((row, i) => {
+      const y = i * (rh + gap);
+      s += `<rect x="${labelW}" y="${y}" width="${avail}" height="${rh}" fill="rgba(255,255,255,0.03)" rx="3"/>`;
+      let x = labelW;
+      for (const cat of CATS) {
+        const bw = (row[cat] / maxV) * avail;
+        if (bw < 0.5) continue;
+        s += `<rect x="${x.toFixed(1)}" y="${y}" width="${bw.toFixed(1)}" height="${rh}" fill="${COLORS[cat]}" rx="2"/>`;
+        if (bw > 20) s += `<text x="${(x+bw/2).toFixed(1)}" y="${(y+rh/2+4).toFixed(1)}" text-anchor="middle" fill="rgba(0,0,0,0.75)" font-size="9" font-weight="bold" font-family="monospace">${row[cat]}</text>`;
+        x += bw;
+      }
+      s += `<text x="${(labelW-5).toFixed(1)}" y="${(y+rh/2+4).toFixed(1)}" text-anchor="end" fill="#bbb" font-size="11" font-family="monospace">${row.label}</text>`;
+      s += `<text x="${(labelW+avail+4).toFixed(1)}" y="${(y+rh/2+4).toFixed(1)}" fill="#555" font-size="9" font-family="monospace">${row.count}</text>`;
+    });
+    s += `</svg>`;
+    return s;
+  }
+
+  function kpi(val, lbl, note = "") {
+    return `<div class="kpi-card"><div class="kpi-val">${val}</div><div class="kpi-lbl">${lbl}</div>${note ? `<div class="kpi-note">${note}</div>` : ""}</div>`;
+  }
+
+  function rateColor(r) { return r > 40 ? "#66bb6a" : r > 20 ? "#ffa726" : "#ef5350"; }
+
+  // Build chart data
+  const outcomeRows  = MAPS.map(mp => ({ label: shortMap(mp), count: mapStats[mp].count, ...mapStats[mp] }));
+  const outcomeSVG   = svgStackedHBars(outcomeRows, 400, 100);
+  const durationSVG  = svgBars(bins, binL, "#7e57c2", 400, 130);
+  const dayCountSVG  = svgLine(dayStats.map(d => d.count),   DL, "#42a5f5", 370, 120);
+  const daySurvSVG   = svgLine(dayStats.map(d => d.survPct), DL, "#66bb6a", 370, 120, "%");
+
+  const botRows = MAPS.map(mp => {
+    const s    = mapStats[mp];
+    const zpct = s.zeroPct.toFixed(0);
+    const col  = parseFloat(zpct) > 60 ? "#ef5350" : parseFloat(zpct) > 30 ? "#ffa726" : "#66bb6a";
+    return `<tr>
+      <td><span class="match-map-tag tag-${mp}">${shortMap(mp)}</span>&nbsp;${ML[mp]}</td>
+      <td class="hv-num">${s.count}</td>
+      <td class="hv-num">${s.avgBotKills.toFixed(1)}</td>
+      <td class="hv-num">${fmtTime(Math.round(s.avgDur))}</td>
+      <td class="hv-num" style="color:${col}">${zpct}%</td>
+    </tr>`;
+  }).join("");
+
+  homeView.innerHTML = `
+    <div class="hv-header">
+      <h2 class="hv-title">Match Analytics</h2>
+      <p class="hv-sub">${N} matches &nbsp;·&nbsp; Feb 10–14 &nbsp;·&nbsp; Ambrose Valley · Grand Rift · Lockdown</p>
+    </div>
+
+    <div class="kpi-strip">
+      ${kpi(N, "Total Matches")}
+      ${kpi(fmtHours(totalSecs), "Total Playtime")}
+      ${kpi(fmtTime(Math.round(totalSecs / N)), "Avg Duration")}
+      ${kpi(totalBotKills.toLocaleString(), "Total Bot Kills")}
+      ${kpi(survPct + "%", "Not Died", "survived · extracted · ragequit")}
+    </div>
+
+    <div class="hv-grid">
+      <div class="hv-card">
+        <h4 class="hv-card-title">Outcomes by Map</h4>
+        <div class="hv-legend">
+          <span class="hv-dot" style="background:#ef5350"></span>Died &nbsp;
+          <span class="hv-dot" style="background:#66bb6a"></span>Survived &nbsp;
+          <span class="hv-dot" style="background:#26c6da"></span>Extracted &nbsp;
+          <span class="hv-dot" style="background:#ffa726"></span>Rage-quit
+        </div>
+        ${outcomeSVG}
+      </div>
+
+      <div class="hv-card">
+        <h4 class="hv-card-title">Duration Distribution</h4>
+        <p class="hv-note">Bucket size: 2 min</p>
+        ${durationSVG}
+      </div>
+
+      <div class="hv-card">
+        <h4 class="hv-card-title">Matches per Day</h4>
+        ${dayCountSVG}
+      </div>
+
+      <div class="hv-card">
+        <h4 class="hv-card-title">Survival Rate per Day</h4>
+        <p class="hv-note">% of matches that did not end in death</p>
+        ${daySurvSVG}
+      </div>
+
+      <div class="hv-card hv-wide">
+        <h4 class="hv-card-title">Bot Engagement by Map</h4>
+        <table class="hv-table">
+          <thead><tr><th>Map</th><th style="text-align:right">Matches</th><th style="text-align:right">Avg Bot Kills/Match</th><th style="text-align:right">Avg Duration</th><th style="text-align:right">% Avoided Bots</th></tr></thead>
+          <tbody>${botRows}</tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="hv-extract-section">
+      <div class="hv-card hv-wide">
+        <h4 class="hv-card-title">Extraction Zone Usage &nbsp;<span class="hv-note" style="font-weight:normal;text-transform:none">loading…</span></h4>
+      </div>
+    </div>
+  `;
+
+  fetchExtractionStats();
+}
+
+async function fetchExtractionStats() {
+  const section = document.getElementById("hv-extract-section");
+  if (!section) return;
+  const MAPS = ["AmbroseValley", "GrandRift", "Lockdown"];
+  const ML   = { AmbroseValley: "Ambrose Valley", GrandRift: "Grand Rift", Lockdown: "Lockdown" };
+  const allZones = [];
+  for (const mp of MAPS) {
+    if (!aggregateCache[mp]) {
+      try {
+        const r = await fetch(`data/aggregate/${mp}.json`);
+        if (r.ok) aggregateCache[mp] = await r.json();
+      } catch {}
+    }
+    if (aggregateCache[mp]) {
+      for (const z of aggregateCache[mp].extraction_zones) {
+        const rate = z.total > 0 ? z.survivors / z.total : 0;
+        allZones.push({ mapKey: mp, map: ML[mp], label: z.label, rate, survivors: z.survivors, total: z.total });
+      }
+    }
+  }
+  allZones.sort((a, b) => b.rate - a.rate);
+
+  function rc(r) { return r > 0.4 ? "#66bb6a" : r > 0.2 ? "#ffa726" : "#ef5350"; }
+  const rows = allZones.map(z => {
+    const pct = Math.round(z.rate * 100);
+    const c   = rc(z.rate);
+    return `<tr>
+      <td><span class="match-map-tag tag-${z.mapKey}">${shortMap(z.mapKey)}</span>&nbsp;${z.map}</td>
+      <td>${z.label}</td>
+      <td style="color:${c};font-weight:700;font-family:monospace">${pct}%</td>
+      <td class="hv-num">${z.survivors}</td>
+      <td class="hv-num">${z.total}</td>
+      <td style="min-width:100px"><div class="hv-rate-bar"><div style="width:${pct}%;background:${c}"></div></div></td>
+    </tr>`;
+  }).join("");
+
+  section.innerHTML = `
+    <div class="hv-card hv-wide">
+      <h4 class="hv-card-title">Extraction Zone Usage</h4>
+      <p class="hv-note">% of players in a match who survived and whose last position was near each zone — ranked by usage rate</p>
+      <table class="hv-table">
+        <thead><tr><th>Map</th><th>Zone</th><th>Usage Rate</th><th style="text-align:right">Extracted</th><th style="text-align:right">Total Players</th><th>Bar</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function fmtHours(secs) {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
 // ── Legend ────────────────────────────────────────────────────────────────────
 function buildLegend() {
   const leg = document.createElement("div");
@@ -1258,7 +1538,7 @@ function buildLegend() {
 // ── Map Analysis mode ─────────────────────────────────────────────────────────
 btnAnalysis.addEventListener("click", () => enterAnalysisMode());
 btnExitAnalysis.addEventListener("click", () => exitAnalysisMode());
-[atogMovement, atogKills, atogDeaths, atogLoot, atogExtract].forEach(t =>
+[atogMovement, atogKills, atogDeaths, atogLoot, atogDwell, atogExtract].forEach(t =>
   t.addEventListener("change", drawAnalysis));
 document.getElementById("analysis-map-sel").addEventListener("change", e => {
   enterAnalysisMode(e.target.value);
@@ -1274,6 +1554,7 @@ async function enterAnalysisMode(mapName) {
   analysisMode = true;
   btnAnalysis.classList.add("active");
   stopPlayback();
+  hideHome();
 
   // Load map image for this specific map
   mapImage = await loadImage(MAP_IMAGES[mapName]);
@@ -1306,7 +1587,7 @@ function exitAnalysisMode() {
     timeline.classList.remove("hidden");
     draw();
   } else {
-    emptyState.classList.remove("hidden");
+    showHome();
   }
 }
 
@@ -1323,49 +1604,112 @@ function drawAnalysis() {
   const hm = aggregateData.heatmaps;
   const GRID_A = hm.movement.grid;
   const CELL_A = MAP_SIZE / GRID_A;
+  const DEDUP_R = CELL_A * 3.5;  // min distance between labeled hotspots
 
+  // Log-scale intensity: compresses low counts, keeps peaks visible
+  function intensity(n, maxV) {
+    if (maxV <= 1) return n > 0 ? 1 : 0;
+    return Math.pow(Math.log(n + 1) / Math.log(maxV + 1), 0.65);
+  }
+
+  // Draw heat layer and return top-4 spatially distinct hotspots
   function drawHeatLayer(layer, paletteFn) {
     const { cells, max: maxV } = hm[layer];
-    for (const [gx, gy, n] of cells) {
-      const t   = Math.sqrt(n / maxV);
+    const sorted = [...cells].sort((a, b) => b[2] - a[2]);
+    for (const [gx, gy, n] of sorted) {
+      const t = intensity(n, maxV);
+      if (t < 0.05) continue;   // skip near-zero background noise
       const cx2 = (gx + 0.5) * CELL_A;
       const cy2 = (gy + 0.5) * CELL_A;
-      const r   = CELL_A * 2.2;
+      const r   = CELL_A * (0.9 + t * 1.6);  // hot cells paint larger blobs
       const g   = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, r);
       paletteFn(g, t);
       ctx.fillStyle = g;
       ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2); ctx.fill();
     }
+    // Collect top-4 spatially distinct hotspots
+    const total = cells.reduce((s, c) => s + c[2], 0);
+    const hotspots = [];
+    for (const [gx, gy, n] of sorted) {
+      const cx = (gx + 0.5) * CELL_A;
+      const cy = (gy + 0.5) * CELL_A;
+      if (hotspots.some(h => Math.hypot(h.cx - cx, h.cy - cy) < DEDUP_R)) continue;
+      hotspots.push({ cx, cy, pct: Math.round(n / total * 100) });
+      if (hotspots.length >= 4) break;
+    }
+    return hotspots;
+  }
+
+  // Draw percentage badges at hotspot locations
+  function drawHotspotLabels(hotspots, color) {
+    ctx.font = `bold ${8.5 / vp.scale}px monospace`;
+    ctx.textAlign = "center";
+    for (const h of hotspots) {
+      if (h.pct < 3) continue;  // skip trivial percentages
+      const d = 4.5 / vp.scale;
+      // Diamond pin
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(h.cx, h.cy - d);
+      ctx.lineTo(h.cx + d, h.cy);
+      ctx.lineTo(h.cx, h.cy + d);
+      ctx.lineTo(h.cx - d, h.cy);
+      ctx.closePath();
+      ctx.fill();
+      // Dark pill behind text for legibility
+      const label = `${h.pct}%`;
+      const tw = ctx.measureText(label).width;
+      const py = h.cy - d - 14 / vp.scale;
+      ctx.fillStyle = "rgba(0,0,0,0.62)";
+      ctx.fillRect(h.cx - tw / 2 - 3 / vp.scale, py, tw + 6 / vp.scale, 11 / vp.scale);
+      ctx.fillStyle = color;
+      ctx.fillText(label, h.cx, py + 9 / vp.scale);
+    }
   }
 
   if (atogMovement.checked) {
-    drawHeatLayer("movement", (g, t) => {
+    const hs = drawHeatLayer("movement", (g, t) => {
       g.addColorStop(0,   `rgba(79,195,247,${t * 0.55})`);
       g.addColorStop(0.4, `rgba(30,100,180,${t * 0.3})`);
       g.addColorStop(1,   "rgba(10,40,100,0)");
     });
+    drawHotspotLabels(hs, "rgba(130,210,255,0.95)");
   }
   if (atogLoot.checked) {
-    drawHeatLayer("loot", (g, t) => {
+    const hs = drawHeatLayer("loot", (g, t) => {
       g.addColorStop(0,   `rgba(100,220,120,${t * 0.7})`);
       g.addColorStop(0.4, `rgba(30,130,60,${t * 0.35})`);
       g.addColorStop(1,   "rgba(0,60,20,0)");
     });
+    drawHotspotLabels(hs, "rgba(140,240,160,0.95)");
+  }
+  if (atogDwell && atogDwell.checked && hm.dwell) {
+    // Dwell time: amber/warm-orange — how long players linger per cell
+    const hs = drawHeatLayer("dwell", (g, t) => {
+      g.addColorStop(0,   `rgba(255,171,64,${t * 0.8})`);
+      g.addColorStop(0.35,`rgba(230,120,10,${t * 0.5})`);
+      g.addColorStop(1,   "rgba(120,50,0,0)");
+    });
+    drawHotspotLabels(hs, "rgba(255,200,100,0.95)");
   }
   if (atogDeaths.checked) {
-    drawHeatLayer("deaths", (g, t) => {
-      g.addColorStop(0,   `rgba(244,67,54,${t * 0.8})`);
-      g.addColorStop(0.3, `rgba(180,0,30,${t * 0.45})`);
-      g.addColorStop(1,   "rgba(100,0,0,0)");
+    // Purple-magenta palette — clearly distinct from kills (yellow-orange)
+    const hs = drawHeatLayer("deaths", (g, t) => {
+      g.addColorStop(0,   `rgba(235,60,235,${t * 0.85})`);
+      g.addColorStop(0.3, `rgba(175,0,210,${t * 0.52})`);
+      g.addColorStop(1,   "rgba(80,0,110,0)");
     });
+    drawHotspotLabels(hs, "rgba(255,130,255,0.95)");
   }
   if (atogKills.checked) {
-    drawHeatLayer("kills", (g, t) => {
+    // Yellow → orange → red fire palette
+    const hs = drawHeatLayer("kills", (g, t) => {
       g.addColorStop(0,   `rgba(255,220,80,${t * 0.85})`);
       g.addColorStop(0.3, `rgba(255,140,0,${t * 0.55})`);
       g.addColorStop(0.7, `rgba(200,50,0,${t * 0.25})`);
       g.addColorStop(1,   "rgba(100,0,0,0)");
     });
+    drawHotspotLabels(hs, "rgba(255,240,100,0.95)");
   }
 
   // Extraction zones with usage rate

@@ -11,7 +11,7 @@
 
     <!-- ── Sidebar ── -->
     <aside id="sidebar">
-      <div id="logo">
+      <div id="logo" onclick="showHome()" title="Go to dashboard">
         <span class="logo-lila">LILA</span><span class="logo-black">BLACK</span>
         <span class="logo-sub">Player Journey Visualizer</span>
       </div>
@@ -68,6 +68,9 @@
     <!-- ── Main ── -->
     <main id="main">
 
+      <!-- Home / Dashboard view -->
+      <div id="home-view" class="hidden"></div>
+
       <!-- Top bar: info + layers + zoom -->
       <div id="topbar" class="hidden">
         <div id="info-title"></div>
@@ -117,11 +120,12 @@
         </select>
         <div id="analysis-title"></div>
         <div id="analysis-layers">
-          <label class="toggle a-tog"><input type="checkbox" id="atog-movement" checked /> Movement</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-kills" /> Kills</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-deaths" /> Deaths</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-loot" /> Loot</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-extract" checked /> Extraction</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-movement" checked /> <span class="a-dot" style="background:#4fc3f7"></span>Movement</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-kills" /> <span class="a-dot" style="background:#ffdc50"></span>Kills</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-deaths" /> <span class="a-dot" style="background:#eb3ceb"></span>Deaths</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-loot" /> <span class="a-dot" style="background:#64dc78"></span>Loot</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-dwell" /> <span class="a-dot" style="background:#ffab40"></span>Dwell</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-extract" checked /> <span class="a-dot" style="background:#66bb6a"></span>Extraction</label>
         </div>
         <button id="btn-exit-analysis">&#x2715; Exit</button>
       </div>
