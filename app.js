@@ -601,6 +601,7 @@ function draw(now) {
     return;
   }
 
+  drawExtractionZones();
   if (togPaths.checked)  drawPaths();
   if (togEvents.checked) drawEventMarkers();
   drawGhostDots();
