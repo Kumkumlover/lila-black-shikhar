@@ -175,7 +175,6 @@ async function loadMatch(id) {
 
   const m = currentMatch.meta;
   // Suspicious behavior flag
-  const deathRatio = m.bot_killed / Math.max(1, m.bot_kills);
   const suspicious = m.bot_kills === 0 && m.bot_killed > 3;
   const suspTag = suspicious
     ? ` <span style="color:#ff9800;font-size:10px;margin-left:6px">⚠ Suspicious: ${m.bot_killed} deaths, 0 kills</span>`
@@ -233,7 +232,7 @@ function loadImage(src) {
 function buildEventMarkers() {
   const dur = currentMatch.meta.duration;
   const col = { Kill:"#ff9800", BotKill:"#ff9800", Killed:"#f44336",
-                BotKilled:"#f44336", KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
+                KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
   evMarkers.innerHTML = currentMatch.events
     .filter(e => col[e.ev])
     .map(e => {
@@ -509,7 +508,7 @@ function drawPaths() {
 function drawEventMarkers() {
   const visible = currentMatch.events.filter(e =>
     e.t <= currentTime &&
-    ["Kill","Killed","BotKill","BotKilled","KilledByStorm","Loot"].includes(e.ev) &&
+    ["Kill","Killed","BotKill","KilledByStorm","Loot"].includes(e.ev) &&
     e.px != null
   );
   const R = 5 / vp.scale;
