@@ -1686,13 +1686,35 @@ function drawAnalysis() {
     drawHotspotLabels(hs, "rgba(140,240,160,0.95)");
   }
   if (atogDwell && atogDwell.checked && hm.dwell) {
-    // Dwell time: amber/warm-orange — how long players linger per cell
-    const hs = drawHeatLayer("dwell", (g, t) => {
-      g.addColorStop(0,   `rgba(255,171,64,${t * 0.8})`);
-      g.addColorStop(0.35,`rgba(230,120,10,${t * 0.5})`);
-      g.addColorStop(1,   "rgba(120,50,0,0)");
-    });
-    drawHotspotLabels(hs, "rgba(255,200,100,0.95)");
+    // Dwell time: custom rendering with percentile floor.
+    // ALL cells accumulate some dwell (players move through everywhere),
+    // so we skip the bottom 60% and only show the top 40% — the areas
+    // where players genuinely lingered vs just transited.
+    const { cells, max: maxV } = hm.dwell;
+    const sorted = [...cells].sort((a, b) => b[2] - a[2]);  // desc
+    // 60th-percentile floor: value at 40% from the top of sorted-desc array
+    const floorIdx = Math.floor(sorted.length * 0.40);
+    const floor    = sorted[floorIdx]?.[2] ?? 0;
+    const range    = Math.max(maxV - floor, 1);
+    const total    = cells.reduce((s, c) => s + c[2], 0);
+    const hotspots = [];
+    for (const [gx, gy, n] of sorted) {
+      if (n <= floor) break;  // sorted desc — everything from here has n ≤ floor
+      const t   = Math.pow((n - floor) / range, 0.55);  // linear-ish above floor
+      const cx2 = (gx + 0.5) * CELL_A;
+      const cy2 = (gy + 0.5) * CELL_A;
+      const r   = CELL_A * (0.85 + t * 1.7);
+      const g2  = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, r);
+      g2.addColorStop(0,   `rgba(255,171,64,${t * 0.9})`);
+      g2.addColorStop(0.4, `rgba(230,100,0,${t * 0.55})`);
+      g2.addColorStop(1,   "rgba(120,40,0,0)");
+      ctx.fillStyle = g2;
+      ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2); ctx.fill();
+      if (hotspots.length < 4 && !hotspots.some(h => Math.hypot(h.cx - cx2, h.cy - cy2) < DEDUP_R)) {
+        hotspots.push({ cx: cx2, cy: cy2, pct: Math.round(n / total * 100) });
+      }
+    }
+    drawHotspotLabels(hotspots, "rgba(255,200,100,0.95)");
   }
   if (atogDeaths.checked) {
     // Purple-magenta palette — clearly distinct from kills (yellow-orange)
