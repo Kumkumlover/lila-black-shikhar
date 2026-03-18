@@ -8,9 +8,17 @@ const MAP_IMAGES = {
 
 const MAP_SIZE = 1024;
 const MAP_CENTER = { x: 512, y: 512 };
-// Storm: safe zone starts large, closes to a small circle over match duration
-const STORM_START_R = 650;
-const STORM_END_R   = 80;
+
+// Storm: phased model — each phase has a wait period then a shrink period,
+// matching how BR/extraction games actually implement their safe zones.
+// [start_frac, end_frac, r_start, r_end, wait_frac]
+const STORM_PHASES = [
+  [0.00, 0.22, 680, 490, 0.55],  // phase 1 — slow start
+  [0.22, 0.47, 490, 300, 0.40],  // phase 2
+  [0.47, 0.68, 300, 170, 0.35],  // phase 3
+  [0.68, 0.86, 170,  88, 0.30],  // phase 4
+  [0.86, 1.00,  88,  42, 0.20],  // phase 5 — rapid final collapse
+];
 
 const C = {
   human:  "#4fc3f7", humanDim: "rgba(79,195,247,0.35)",
@@ -68,6 +76,8 @@ const spawnedKeys   = new Set();
 let inferenceData  = null;  // loaded per-map, cross-match bot data
 const inferenceCache = {};  // mapName → parsed JSON (session cache)
 
+let stormCenter = { x: 512, y: 512 };  // estimated per match from late-game positions
+
 // Storm lightning particles (persistent, regenerated each frame based on now)
 const STORM_BOLTS = 12;
 
@@ -95,6 +105,7 @@ const togBots    = document.getElementById("toggle-bots");
 const togHumans  = document.getElementById("toggle-humans");
 const togStorm   = document.getElementById("toggle-storm");
 const togInfer   = document.getElementById("toggle-infer");
+const togRoutes  = document.getElementById("toggle-routes");
 const inferWrap  = document.getElementById("infer-toggle-wrap");
 const inferBadge = document.getElementById("infer-badge");
 
@@ -193,6 +204,7 @@ async function loadMatch(id) {
   mapImage = await loadImage(MAP_IMAGES[currentMatch.meta.map]);
   await loadInferenceData(currentMatch.meta.map);
   buildPlayerPositions();
+  computeStormCenter();
 
   // Auto-enable inference layer when match has bot kills but no bot telemetry
   const shouldInfer = currentMatch.meta.bots === 0 && currentMatch.meta.bot_kills > 0;
@@ -348,12 +360,44 @@ window.addEventListener("mouseup", e => {
 window.addEventListener("resize", () => { if (currentMatch) { resizeCanvas(); fitViewport(); draw(); } });
 
 // ── Storm ─────────────────────────────────────────────────────────────────────
+
+// Estimate safe-zone center from match data:
+// - Players alive in late game (t > 50% of duration) must be inside the ring.
+// - Their median position is a good proxy for ring center.
+// - Players who died to storm are excluded (they were outside).
+function computeStormCenter() {
+  if (!currentMatch) { stormCenter = { ...MAP_CENTER }; return; }
+  const dur = currentMatch.meta.duration;
+  const stormKilled = new Set(
+    currentMatch.events.filter(e => e.ev === "KilledByStorm").map(e => e.uid)
+  );
+  const late = currentMatch.events.filter(e =>
+    e.ev === "Position" && e.t > dur * 0.50 && e.px != null && !stormKilled.has(e.uid)
+  );
+  if (late.length < 6) { stormCenter = { ...MAP_CENTER }; return; }
+  const xs = late.map(p => p.px).sort((a, b) => a - b);
+  const ys = late.map(p => p.py).sort((a, b) => a - b);
+  const mid = Math.floor(xs.length / 2);
+  // Clamp to avoid an extreme outlier pulling the center off-map
+  stormCenter = {
+    x: Math.max(100, Math.min(924, xs[mid])),
+    y: Math.max(100, Math.min(924, ys[mid])),
+  };
+}
+
+// Phased ring radius: wait → shrink → wait → shrink pattern (matches real BR/extraction games)
 function getStormRadius(t) {
-  if (!currentMatch) return STORM_START_R;
+  if (!currentMatch) return STORM_PHASES[0][2];
   const frac = Math.min(1, t / currentMatch.meta.duration);
-  // Ease-in: slow at start, accelerates
-  const eased = frac * frac;
-  return STORM_START_R - (STORM_START_R - STORM_END_R) * eased;
+  for (const [pStart, pEnd, rStart, rEnd, waitFrac] of STORM_PHASES) {
+    if (frac <= pEnd) {
+      const phFrac = (frac - pStart) / (pEnd - pStart);
+      if (phFrac <= waitFrac) return rStart;
+      const shrinkFrac = (phFrac - waitFrac) / (1 - waitFrac);
+      return rStart - (rStart - rEnd) * (shrinkFrac * shrinkFrac);  // ease-in
+    }
+  }
+  return STORM_PHASES[STORM_PHASES.length - 1][3];
 }
 
 // Seeded pseudo-random for stable bolt positions per frame
@@ -366,8 +410,8 @@ function drawStorm(now) {
   if (!togStorm || !togStorm.checked) return;
 
   const r        = getStormRadius(currentTime);
-  const cx       = MAP_CENTER.x;
-  const cy       = MAP_CENTER.y;
+  const cx       = stormCenter.x;
+  const cy       = stormCenter.y;
   const pulse    = Math.sin(now * 0.0025) * 0.5 + 0.5;   // 0-1, ~2.5s period
   const pulse2   = Math.sin(now * 0.004 + 1.2) * 0.5 + 0.5;
 
@@ -1033,6 +1077,7 @@ function updateTimeLabel(t) {
 [togPaths, togEvents, togHeatmap, togBots, togHumans, togStorm].forEach(el =>
   el.addEventListener("change", draw));
 togInfer.addEventListener("change", () => { updateInferBadge(); draw(); });
+togRoutes.addEventListener("change", draw);
 
 // ── Inference layer ───────────────────────────────────────────────────────────
 async function loadInferenceData(mapName) {
@@ -1077,20 +1122,34 @@ function drawInference() {
     ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2); ctx.fill();
   }
 
-  // ── 2. Patrol route ghost paths (amber dashed) ───────────────────────────────
-  ctx.lineJoin  = "round";
-  ctx.lineCap   = "round";
-  ctx.lineWidth = 1.5 / vp.scale;
-  ctx.setLineDash([5 / vp.scale, 4 / vp.scale]);
-  for (const route of inf.routes) {
-    if (route.length < 2) continue;
-    ctx.strokeStyle = "rgba(255,213,79,0.28)";
-    ctx.beginPath();
-    ctx.moveTo(route[0][0], route[0][1]);
-    for (let i = 1; i < route.length; i++) ctx.lineTo(route[i][0], route[i][1]);
-    ctx.stroke();
+  // ── 2. Patrol route ghost paths (amber dashed, toggle-gated) ────────────────
+  if (togRoutes && togRoutes.checked) {
+    // High-confidence filter: keep only longer routes (≥8 waypoints),
+    // then spatially deduplicate (skip if start within 50px of a kept route).
+    const MIN_WP  = 8;
+    const DEDUP_R = 50;
+    const kept = [];
+    const sorted = [...inf.routes].sort((a, b) => b.length - a.length);
+    for (const route of sorted) {
+      if (route.length < MIN_WP) break;  // sorted desc, no point continuing
+      const [rx, ry] = route[0];
+      const dupe = kept.some(k => Math.hypot(k[0][0] - rx, k[0][1] - ry) < DEDUP_R);
+      if (!dupe) kept.push(route);
+      if (kept.length >= 22) break;  // cap at 22 routes max
+    }
+    ctx.lineJoin  = "round";
+    ctx.lineCap   = "round";
+    ctx.lineWidth = 1.5 / vp.scale;
+    ctx.setLineDash([5 / vp.scale, 4 / vp.scale]);
+    for (const route of kept) {
+      ctx.strokeStyle = "rgba(255,213,79,0.32)";
+      ctx.beginPath();
+      ctx.moveTo(route[0][0], route[0][1]);
+      for (let i = 1; i < route.length; i++) ctx.lineTo(route[i][0], route[i][1]);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
   }
-  ctx.setLineDash([]);
 
   // ── 3. Kill uncertainty circles (dotted amber rings at each visible BotKill) ──
   const engageR = inf.engage_px;
