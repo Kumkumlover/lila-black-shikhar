@@ -11,14 +11,14 @@
 
     <!-- ── Sidebar ── -->
     <aside id="sidebar">
-      <div id="logo" onclick="showHome()" title="Go to dashboard">
+      <div id="logo" onclick="showHome()" title="Return to the analytics dashboard">
         <span class="logo-lila">LILA</span><span class="logo-black">BLACK</span>
         <span class="logo-sub">Player Journey Visualizer</span>
       </div>
 
       <section class="panel" id="filters">
         <h3>Filters</h3>
-        <label>Map
+        <label title="Show only matches on this map">Map
           <select id="filter-map">
             <option value="">All Maps</option>
             <option value="AmbroseValley">Ambrose Valley</option>
@@ -26,7 +26,7 @@
             <option value="Lockdown">Lockdown</option>
           </select>
         </label>
-        <label>Day
+        <label title="Show only matches from this day (Feb 10–14)">Day
           <select id="filter-day">
             <option value="">All Days</option>
             <option value="February_10">Feb 10</option>
@@ -36,7 +36,7 @@
             <option value="February_14">Feb 14</option>
           </select>
         </label>
-        <label>Sort by
+        <label title="Sort the match list by this criterion">Sort by
           <select id="filter-sort">
             <option value="total_events">Most Events</option>
             <option value="duration">Longest</option>
@@ -44,7 +44,7 @@
             <option value="loot">Most Loot</option>
           </select>
         </label>
-        <label>Outcome
+        <label title="Filter by how the match ended — Died (killed), Survived (disconnected alive), Extracted (reached extraction zone), Rage-quit (disconnected mid-match)">Outcome
           <select id="filter-outcome">
             <option value="">All Outcomes</option>
             <option value="died">Died</option>
@@ -56,7 +56,7 @@
       </section>
 
       <section class="panel" id="analysis-panel">
-        <button id="btn-analysis" title="Cross-match aggregate view for Level Designers">Map Analysis</button>
+        <button id="btn-analysis" title="Switch to Map Analysis view — cross-match aggregate heatmaps for Level Designers showing movement, kills, deaths, loot, and dwell patterns">Map Analysis</button>
       </section>
 
       <section class="panel" id="match-list-panel">
@@ -76,16 +76,16 @@
         <div id="info-title"></div>
         <div id="info-stats"></div>
         <div class="layer-divider"></div>
-        <label class="toggle"><input type="checkbox" id="toggle-paths"  checked /> Paths</label>
-        <label class="toggle"><input type="checkbox" id="toggle-events" checked /> Events</label>
-        <label class="toggle"><input type="checkbox" id="toggle-heatmap" /> Heatmap</label>
-        <label class="toggle"><input type="checkbox" id="toggle-bots"   checked /> Bots</label>
-        <label class="toggle"><input type="checkbox" id="toggle-humans" checked /> Humans</label>
-        <label class="toggle"><input type="checkbox" id="toggle-storm" checked /> Storm</label>
-        <label class="toggle toggle-infer" id="infer-toggle-wrap" title="Inferred bot positions from cross-match analysis. Not real data.">
+        <label class="toggle" title="Show/hide player movement path lines"><input type="checkbox" id="toggle-paths"  checked /> Paths</label>
+        <label class="toggle" title="Show/hide event icons on the map (bot kills, deaths, loot pickups)"><input type="checkbox" id="toggle-events" checked /> Events</label>
+        <label class="toggle" title="Show a density heatmap of player positions for this match — brighter = more time spent"><input type="checkbox" id="toggle-heatmap" /> Heatmap</label>
+        <label class="toggle" title="Show/hide bot AI movement paths"><input type="checkbox" id="toggle-bots"   checked /> Bots</label>
+        <label class="toggle" title="Show/hide human player paths"><input type="checkbox" id="toggle-humans" checked /> Humans</label>
+        <label class="toggle" title="Show/hide the storm ring and lightning effects. The ring shrinks in phases over the match duration"><input type="checkbox" id="toggle-storm" checked /> Storm</label>
+        <label class="toggle toggle-infer" id="infer-toggle-wrap" title="Inferred bot positions from cross-match analysis. These are estimates — not actual bot telemetry from this match.">
           <input type="checkbox" id="toggle-infer" /> <span>~ Bots</span>
         </label>
-        <label class="toggle toggle-infer" title="Inferred patrol routes from cross-match bot trajectories. Not real data.">
+        <label class="toggle toggle-infer" title="Inferred patrol routes derived from cross-match bot trajectories. High-confidence routes only. Not actual telemetry.">
           <input type="checkbox" id="toggle-routes" /> <span>~ Routes</span>
         </label>
         <div class="layer-divider"></div>
@@ -120,12 +120,12 @@
         </select>
         <div id="analysis-title"></div>
         <div id="analysis-layers">
-          <label class="toggle a-tog"><input type="checkbox" id="atog-movement" checked /> <span class="a-dot" style="background:#4fc3f7"></span>Movement</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-kills" /> <span class="a-dot" style="background:#ffdc50"></span>Kills</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-deaths" /> <span class="a-dot" style="background:#eb3ceb"></span>Deaths</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-loot" /> <span class="a-dot" style="background:#64dc78"></span>Loot</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-dwell" /> <span class="a-dot" style="background:#ffab40"></span>Dwell</label>
-          <label class="toggle a-tog"><input type="checkbox" id="atog-extract" checked /> <span class="a-dot" style="background:#66bb6a"></span>Extraction</label>
+          <label class="toggle a-tog" title="Movement frequency — blue heatmap showing how often each area was visited across all matches on this map"><input type="checkbox" id="atog-movement" checked /> <span class="a-dot" style="background:#4fc3f7"></span>Movement</label>
+          <label class="toggle a-tog" title="Bot kill locations — yellow/orange hotspots showing where players eliminated bots. Hotspot % labels show concentration"><input type="checkbox" id="atog-kills" /> <span class="a-dot" style="background:#ffdc50"></span>Kills</label>
+          <label class="toggle a-tog" title="Player death locations — purple/magenta hotspots showing where players died to bots, storm, or other players"><input type="checkbox" id="atog-deaths" /> <span class="a-dot" style="background:#eb3ceb"></span>Deaths</label>
+          <label class="toggle a-tog" title="Loot collection points — green hotspots showing where players picked up items. High loot = intended or emergent loot room"><input type="checkbox" id="atog-loot" /> <span class="a-dot" style="background:#64dc78"></span>Loot</label>
+          <label class="toggle a-tog" title="Dwell time — amber heatmap showing how long players lingered per area, not just how often they visited. Camps, bottlenecks, and combat zones show high dwell even with lower visit frequency"><input type="checkbox" id="atog-dwell" /> <span class="a-dot" style="background:#ffab40"></span>Dwell</label>
+          <label class="toggle a-tog" title="Extraction zones — green circles sized and labelled by usage rate (% of players who survived and extracted here). Compares zone popularity for balance analysis"><input type="checkbox" id="atog-extract" checked /> <span class="a-dot" style="background:#66bb6a"></span>Extraction</label>
         </div>
         <button id="btn-exit-analysis">&#x2715; Exit</button>
       </div>
@@ -134,15 +134,15 @@
 
       <!-- Timeline -->
       <div id="timeline" class="hidden">
-        <button id="btn-prev" title="Previous match">&#8249;</button>
-        <button id="btn-play">▶</button>
-        <button id="btn-next" title="Next match">&#8250;</button>
-        <div class="timeline-track">
+        <button id="btn-prev" title="Previous match in list">&#8249;</button>
+        <button id="btn-play" title="Play/pause match playback">▶</button>
+        <button id="btn-next" title="Next match in list">&#8250;</button>
+        <div class="timeline-track" title="Drag to scrub through the match. Colored ticks are events — hover to see details, click to jump">
           <input type="range" id="scrubber" min="0" max="100" value="0" step="1" />
           <div id="event-markers"></div>
         </div>
-        <span id="time-label">0:00 / 0:00</span>
-        <div class="speed-wrap">
+        <span id="time-label" title="Current time / total match duration">0:00 / 0:00</span>
+        <div class="speed-wrap" title="Playback speed multiplier">
           Speed:
           <select id="playback-speed">
             <option value="1">1×</option>

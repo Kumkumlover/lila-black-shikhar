@@ -1370,8 +1370,8 @@ function buildHomeView() {
     return s;
   }
 
-  function kpi(val, lbl, note = "") {
-    return `<div class="kpi-card"><div class="kpi-val">${val}</div><div class="kpi-lbl">${lbl}</div>${note ? `<div class="kpi-note">${note}</div>` : ""}</div>`;
+  function kpi(val, lbl, note = "", tip = "") {
+    return `<div class="kpi-card"${tip ? ` title="${tip}"` : ""}><div class="kpi-val">${val}</div><div class="kpi-lbl">${lbl}</div>${note ? `<div class="kpi-note">${note}</div>` : ""}</div>`;
   }
 
   function rateColor(r) { return r > 40 ? "#66bb6a" : r > 20 ? "#ffa726" : "#ef5350"; }
@@ -1403,15 +1403,15 @@ function buildHomeView() {
     </div>
 
     <div class="kpi-strip">
-      ${kpi(N, "Total Matches")}
-      ${kpi(fmtHours(totalSecs), "Total Playtime")}
-      ${kpi(fmtTime(Math.round(totalSecs / N)), "Avg Duration")}
-      ${kpi(totalBotKills.toLocaleString(), "Total Bot Kills")}
-      ${kpi(survPct + "%", "Not Died", "survived · extracted · ragequit")}
+      ${kpi(N, "Total Matches", "", "Total number of recorded matches across all maps and days")}
+      ${kpi(fmtHours(totalSecs), "Total Playtime", "", "Sum of all match durations — total player-hours in the dataset")}
+      ${kpi(fmtTime(Math.round(totalSecs / N)), "Avg Duration", "", "Average match length. Short matches often indicate early deaths; long matches indicate survival or extraction")}
+      ${kpi(totalBotKills.toLocaleString(), "Total Bot Kills", "", "Total bot kills across all matches. Low average per match may indicate bots are avoiding players or are too easy to avoid")}
+      ${kpi(survPct + "%", "Not Died", "survived · extracted · ragequit", "% of matches that did not end in the player's death — includes survived, extracted, and rage-quit sessions")}
     </div>
 
     <div class="hv-grid">
-      <div class="hv-card">
+      <div class="hv-card" title="How matches ended on each map — bars show count of Died / Survived / Extracted / Rage-quit. A high Died bar means the map is punishing; high Extracted suggests accessible extraction">
         <h4 class="hv-card-title">Outcomes by Map</h4>
         <div class="hv-legend">
           <span class="hv-dot" style="background:#ef5350"></span>Died &nbsp;
@@ -1422,24 +1422,24 @@ function buildHomeView() {
         ${outcomeSVG}
       </div>
 
-      <div class="hv-card">
+      <div class="hv-card" title="How long matches last — grouped into 2-minute buckets. Peaks reveal typical match pacing. A skew toward short matches suggests early-death problems; toward long suggests the map rewards survival">
         <h4 class="hv-card-title">Duration Distribution</h4>
         <p class="hv-note">Bucket size: 2 min</p>
         ${durationSVG}
       </div>
 
-      <div class="hv-card">
+      <div class="hv-card" title="Number of matches recorded each day (Feb 10–14). Volume differences may indicate test sessions or data gaps">
         <h4 class="hv-card-title">Matches per Day</h4>
         ${dayCountSVG}
       </div>
 
-      <div class="hv-card">
+      <div class="hv-card" title="% of matches per day that did not end in the player's death (survived + extracted + ragequit). Drops may indicate a harder day of play or specific map rotations">
         <h4 class="hv-card-title">Survival Rate per Day</h4>
         <p class="hv-note">% of matches that did not end in death</p>
         ${daySurvSVG}
       </div>
 
-      <div class="hv-card hv-wide">
+      <div class="hv-card hv-wide" title="How players interact with bots per map. '% Avoided Bots' is the share of matches where the player recorded zero bot kills — high avoidance suggests bots are placed in areas players skip">
         <h4 class="hv-card-title">Bot Engagement by Map</h4>
         <table class="hv-table">
           <thead><tr><th>Map</th><th style="text-align:right">Matches</th><th style="text-align:right">Avg Bot Kills/Match</th><th style="text-align:right">Avg Duration</th><th style="text-align:right">% Avoided Bots</th></tr></thead>
@@ -1465,9 +1465,10 @@ async function fetchExtractionStats() {
   const ML   = { AmbroseValley: "Ambrose Valley", GrandRift: "Grand Rift", Lockdown: "Lockdown" };
   const allZones = [];
   for (const mp of MAPS) {
-    if (!aggregateCache[mp]) {
+    const staleExt = aggregateCache[mp] && !aggregateCache[mp].heatmaps?.dwell;
+    if (!aggregateCache[mp] || staleExt) {
       try {
-        const r = await fetch(`data/aggregate/${mp}.json`);
+        const r = await fetch(`data/aggregate/${mp}.json?v=2`);
         if (r.ok) aggregateCache[mp] = await r.json();
       } catch {}
     }
@@ -1559,9 +1560,10 @@ async function enterAnalysisMode(mapName) {
   // Load map image for this specific map
   mapImage = await loadImage(MAP_IMAGES[mapName]);
 
-  // Load aggregate data
-  if (!aggregateCache[mapName]) {
-    const res = await fetch(`data/aggregate/${mapName}.json`);
+  // Load aggregate data — bypass cache if stale (missing dwell key from old build)
+  const stale = aggregateCache[mapName] && !aggregateCache[mapName].heatmaps?.dwell;
+  if (!aggregateCache[mapName] || stale) {
+    const res = await fetch(`data/aggregate/${mapName}.json?v=2`);
     aggregateCache[mapName] = await res.json();
   }
   aggregateData = aggregateCache[mapName];
