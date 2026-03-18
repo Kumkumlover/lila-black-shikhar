@@ -285,5 +285,65 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .popup-stats b   { color: var(--text); margin-left: 4px; }
 .popup-ghost { grid-column: 1/-1; margin-top: 4px; font-size: 10px; color: #ff9800; }
 
+/* ── Outcome badge in match list ── */
+.outcome-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  font-size: 9px; font-weight: 700; padding: 1px 5px;
+  border-radius: 3px; flex-shrink: 0; letter-spacing: 0.3px;
+}
+.outcome-died      { background: rgba(239,83,80,0.15);  color: #ef5350; border: 1px solid rgba(239,83,80,0.3); }
+.outcome-survived  { background: rgba(79,195,247,0.12); color: #90caf9; border: 1px solid rgba(79,195,247,0.25); }
+.outcome-extracted { background: rgba(102,187,106,0.15);color: #66bb6a; border: 1px solid rgba(102,187,106,0.3); }
+.outcome-ragequit  { background: rgba(158,158,158,0.1); color: #bdbdbd; border: 1px solid rgba(158,158,158,0.2); }
+
+/* ── Map Analysis button ── */
+#analysis-panel { padding: 8px 12px; }
+#btn-analysis {
+  width: 100%; padding: 7px 10px; background: rgba(232,200,74,0.08);
+  border: 1px solid rgba(232,200,74,0.35); border-radius: 5px;
+  color: var(--accent); font-size: 11px; font-weight: 600;
+  cursor: pointer; letter-spacing: 0.5px; transition: background 0.15s, border-color 0.15s;
+}
+#btn-analysis:hover { background: rgba(232,200,74,0.15); border-color: var(--accent); }
+#btn-analysis.active { background: rgba(232,200,74,0.2); border-color: var(--accent); color: #fff; }
+
+/* ── Analysis mode overlay ── */
+#analysis-controls {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  background: rgba(10,10,14,0.92); border: 1px solid var(--accent);
+  border-radius: 8px; padding: 10px 14px; z-index: 20;
+  backdrop-filter: blur(12px); display: flex; align-items: center; gap: 12px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.7);
+}
+#analysis-title {
+  font-size: 11px; font-weight: 700; color: var(--accent);
+  white-space: nowrap; letter-spacing: 0.5px;
+}
+#analysis-layers { display: flex; gap: 6px; }
+.a-tog { border: 1px solid var(--border) !important; border-radius: 4px; padding: 3px 8px !important; font-size: 10px !important; color: var(--muted2) !important; }
+.a-tog.tog-active, .a-tog:has(input:checked) { border-color: var(--accent) !important; color: var(--text) !important; }
+#btn-exit-analysis {
+  background: transparent; border: 1px solid var(--border); color: var(--muted2);
+  border-radius: 4px; padding: 3px 8px; font-size: 10px; cursor: pointer;
+  transition: border-color 0.1s, color 0.1s;
+}
+#btn-exit-analysis:hover { border-color: #ef5350; color: #ef5350; }
+
+/* ── Event tick tooltip ── */
+#ev-tooltip {
+  position: fixed; background: rgba(10,10,14,0.95);
+  border: 1px solid var(--border); border-radius: 5px;
+  padding: 4px 9px; font-size: 10px; color: var(--text);
+  pointer-events: none; z-index: 100; white-space: nowrap;
+  backdrop-filter: blur(8px); box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+}
+/* Make event ticks bigger and clickable */
+.ev-tick {
+  height: 8px !important; width: 3px !important;
+  border-radius: 2px; cursor: pointer; pointer-events: all !important;
+  transition: transform 0.1s, opacity 0.1s; opacity: 0.8;
+}
+.ev-tick:hover { transform: translateX(-50%) scaleY(1.5); opacity: 1; }
+
 /* ── Utility ── */
 .hidden { display: none !important; }

@@ -78,6 +78,10 @@ const inferenceCache = {};  // mapName → parsed JSON (session cache)
 
 let stormCenter = { x: 512, y: 512 };  // estimated per match from late-game positions
 
+let analysisMode    = false;
+let aggregateData   = null;   // loaded per-map
+const aggregateCache = {};    // mapName → parsed JSON
+
 // Storm lightning particles (persistent, regenerated each frame based on now)
 const STORM_BOLTS = 12;
 
@@ -109,13 +113,25 @@ const togRoutes  = document.getElementById("toggle-routes");
 const inferWrap  = document.getElementById("infer-toggle-wrap");
 const inferBadge = document.getElementById("infer-badge");
 
-const filterMap  = document.getElementById("filter-map");
-const filterDay  = document.getElementById("filter-day");
-const filterSort = document.getElementById("filter-sort");
-const speedSel   = document.getElementById("playback-speed");
-const btnPrev    = document.getElementById("btn-prev");
-const btnNext    = document.getElementById("btn-next");
-const playerPopup = document.getElementById("player-popup");
+const filterMap     = document.getElementById("filter-map");
+const filterDay     = document.getElementById("filter-day");
+const filterSort    = document.getElementById("filter-sort");
+const filterOutcome = document.getElementById("filter-outcome");
+const speedSel      = document.getElementById("playback-speed");
+const btnPrev       = document.getElementById("btn-prev");
+const btnNext       = document.getElementById("btn-next");
+const playerPopup   = document.getElementById("player-popup");
+const btnAnalysis   = document.getElementById("btn-analysis");
+const analysisControls = document.getElementById("analysis-controls");
+const analysisTitle    = document.getElementById("analysis-title");
+const btnExitAnalysis  = document.getElementById("btn-exit-analysis");
+const evTooltip        = document.getElementById("ev-tooltip");
+
+const atogMovement = document.getElementById("atog-movement");
+const atogKills    = document.getElementById("atog-kills");
+const atogDeaths   = document.getElementById("atog-deaths");
+const atogLoot     = document.getElementById("atog-loot");
+const atogExtract  = document.getElementById("atog-extract");
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
@@ -123,17 +139,19 @@ async function init() {
   allMatches = await res.json();
   renderMatchList();
   buildLegend();
-  [filterMap, filterDay, filterSort].forEach(el =>
+  [filterMap, filterDay, filterSort, filterOutcome].forEach(el =>
     el.addEventListener("change", renderMatchList));
 }
 
 // ── Match list ────────────────────────────────────────────────────────────────
 function renderMatchList() {
-  const mapF  = filterMap.value;
-  const dayF  = filterDay.value;
-  const sortF = filterSort.value;
+  const mapF     = filterMap.value;
+  const dayF     = filterDay.value;
+  const sortF    = filterSort.value;
+  const outcomeF = filterOutcome.value;
   filteredMatches = allMatches
-    .filter(m => (!mapF || m.map === mapF) && (!dayF || m.day === dayF))
+    .filter(m => (!mapF || m.map === mapF) && (!dayF || m.day === dayF)
+                 && (!outcomeF || m.outcome === outcomeF))
     .sort((a, b) => b[sortF] - a[sortF]);
   const list = filteredMatches;
 
@@ -146,15 +164,15 @@ function renderMatchList() {
     const suspicious = m.bot_kills === 0 && m.bot_killed > 3;
   const hasAgent   = m.agents > 0;
   const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
-  const OUTCOME_ICON = { extracted:"&#x2191;", survived:"&#9679;", died:"&#x2715;", ragequit:"&#x21BA;", unknown:"" };
-  const OUTCOME_COL  = { extracted:"#66bb6a",  survived:"#90caf9",  died:"#ef5350",  ragequit:"#bdbdbd",  unknown:"#555" };
-  const oc   = m.outcome || "unknown";
+  const OUTCOME_LABEL = { extracted:"Extracted", survived:"Survived", died:"Died", ragequit:"Rage-quit?", unknown:"" };
+  const oc      = m.outcome || "unknown";
   const ocBadge = oc !== "unknown"
-    ? ` <span style="color:${OUTCOME_COL[oc]};font-size:9px;font-weight:bold" title="Outcome: ${oc}">${OUTCOME_ICON[oc]}</span>` : "";
+    ? ` <span class="outcome-badge outcome-${oc}">${OUTCOME_LABEL[oc]}</span>` : "";
     return `<li data-id="${m.id}" ${suspicious ? 'style="border-left-color:#ff9800"' : ''}>
       <div class="match-title">
         <span class="match-map-tag tag-${m.map}">${shortMap(m.map)}</span>
-        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}${ocBadge}
+        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}
+        ${ocBadge}
       </div>
       <div class="match-meta">
         ${day} · ${dur} · <b>${m.total_events}</b> ev · H:<b>${m.humans}</b>${m.agents > 0 ? ` A:<b style="color:${C.agent}">${m.agents}</b>` : ""} B:<b>${m.bots}</b>
@@ -277,14 +295,41 @@ function loadImage(src) {
 // ── Event ticks ───────────────────────────────────────────────────────────────
 function buildEventMarkers() {
   const dur = currentMatch.meta.duration;
-  const col = { Kill:"#ff9800", BotKill:"#ff9800", Killed:"#f44336",
-                KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
+  const col   = { Kill:"#ff9800", BotKill:"#ff9800", Killed:"#f44336",
+                  KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
+  const label = { Kill:"PvP Kill", BotKill:"Bot Kill", Killed:"Died",
+                  KilledByStorm:"Storm Death", Loot:"Loot" };
   evMarkers.innerHTML = currentMatch.events
     .filter(e => col[e.ev])
     .map(e => {
       const pct = (e.t / dur) * 100;
-      return `<div class="ev-tick" style="left:${pct}%;background:${col[e.ev]}"></div>`;
+      const tip = `${label[e.ev]} — ${fmtTime(e.t)}`;
+      return `<div class="ev-tick" style="left:${pct}%;background:${col[e.ev]}" data-tip="${tip}"></div>`;
     }).join("");
+
+  // Tooltip on hover
+  evMarkers.querySelectorAll(".ev-tick").forEach(tick => {
+    tick.addEventListener("mouseenter", e => {
+      evTooltip.textContent = tick.dataset.tip;
+      evTooltip.classList.remove("hidden");
+    });
+    tick.addEventListener("mousemove", e => {
+      evTooltip.style.left = (e.clientX + 12) + "px";
+      evTooltip.style.top  = (e.clientY - 28) + "px";
+    });
+    tick.addEventListener("mouseleave", () => evTooltip.classList.add("hidden"));
+    // Click to scrub to that time
+    tick.addEventListener("click", e => {
+      e.stopPropagation();
+      const t = parseInt(tick.style.left) / 100 * dur;
+      currentTime = Math.round(t);
+      scrubber.valueAsNumber = currentTime;
+      updateTimeLabel(currentTime);
+      lastEffectTime = currentTime;
+      spawnedKeys.clear();
+      draw();
+    });
+  });
 }
 
 // ── Viewport ──────────────────────────────────────────────────────────────────
@@ -1207,6 +1252,141 @@ function buildLegend() {
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="none" stroke="rgba(255,213,79,0.6)" stroke-width="1" stroke-dasharray="3,3"/><circle cx="9" cy="9" r="1.5" fill="rgba(255,213,79,0.7)"/></svg></div><span style="color:#ffd54f">~ Kill range</span></div>
   `;
   wrap.appendChild(leg);
+}
+
+// ── Map Analysis mode ─────────────────────────────────────────────────────────
+btnAnalysis.addEventListener("click", () => enterAnalysisMode());
+btnExitAnalysis.addEventListener("click", () => exitAnalysisMode());
+[atogMovement, atogKills, atogDeaths, atogLoot, atogExtract].forEach(t =>
+  t.addEventListener("change", drawAnalysis));
+
+async function enterAnalysisMode() {
+  const mapName = filterMap.value || (currentMatch ? currentMatch.meta.map : "AmbroseValley");
+  analysisMode = true;
+  btnAnalysis.classList.add("active");
+  stopPlayback();
+
+  // Load map image if needed
+  if (!mapImage) mapImage = await loadImage(MAP_IMAGES[mapName]);
+  else if (currentMatch && currentMatch.meta.map !== mapName)
+    mapImage = await loadImage(MAP_IMAGES[mapName]);
+
+  // Load aggregate data
+  if (aggregateCache[mapName]) {
+    aggregateData = aggregateCache[mapName];
+  } else {
+    const res = await fetch(`data/aggregate/${mapName}.json`);
+    aggregateCache[mapName] = await res.json();
+    aggregateData = aggregateCache[mapName];
+  }
+
+  emptyState.classList.add("hidden");
+  topbar.classList.add("hidden");
+  timeline.classList.add("hidden");
+  analysisControls.classList.remove("hidden");
+  analysisTitle.textContent = `MAP ANALYSIS — ${mapName.replace("AmbroseValley","Ambrose Valley")} · ${aggregateData.matches} matches`;
+
+  resizeCanvas();
+  fitViewport();
+  drawAnalysis();
+}
+
+function exitAnalysisMode() {
+  analysisMode = false;
+  btnAnalysis.classList.remove("active");
+  analysisControls.classList.add("hidden");
+  if (currentMatch) {
+    topbar.classList.remove("hidden");
+    timeline.classList.remove("hidden");
+    draw();
+  } else {
+    emptyState.classList.remove("hidden");
+  }
+}
+
+function drawAnalysis() {
+  if (!analysisMode || !aggregateData || !mapImage) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save();
+  ctx.setTransform(vp.scale, 0, 0, vp.scale, vp.ox, vp.oy);
+  ctx.drawImage(mapImage, 0, 0, MAP_SIZE, MAP_SIZE);
+  // Dark base overlay so heat colours pop
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(0, 0, MAP_SIZE, MAP_SIZE);
+
+  const hm = aggregateData.heatmaps;
+  const GRID_A = hm.movement.grid;
+  const CELL_A = MAP_SIZE / GRID_A;
+
+  function drawHeatLayer(layer, paletteFn) {
+    const { cells, max: maxV } = hm[layer];
+    for (const [gx, gy, n] of cells) {
+      const t   = Math.sqrt(n / maxV);
+      const cx2 = (gx + 0.5) * CELL_A;
+      const cy2 = (gy + 0.5) * CELL_A;
+      const r   = CELL_A * 2.2;
+      const g   = ctx.createRadialGradient(cx2, cy2, 0, cx2, cy2, r);
+      paletteFn(g, t);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  if (atogMovement.checked) {
+    drawHeatLayer("movement", (g, t) => {
+      g.addColorStop(0,   `rgba(79,195,247,${t * 0.55})`);
+      g.addColorStop(0.4, `rgba(30,100,180,${t * 0.3})`);
+      g.addColorStop(1,   "rgba(10,40,100,0)");
+    });
+  }
+  if (atogLoot.checked) {
+    drawHeatLayer("loot", (g, t) => {
+      g.addColorStop(0,   `rgba(100,220,120,${t * 0.7})`);
+      g.addColorStop(0.4, `rgba(30,130,60,${t * 0.35})`);
+      g.addColorStop(1,   "rgba(0,60,20,0)");
+    });
+  }
+  if (atogDeaths.checked) {
+    drawHeatLayer("deaths", (g, t) => {
+      g.addColorStop(0,   `rgba(244,67,54,${t * 0.8})`);
+      g.addColorStop(0.3, `rgba(180,0,30,${t * 0.45})`);
+      g.addColorStop(1,   "rgba(100,0,0,0)");
+    });
+  }
+  if (atogKills.checked) {
+    drawHeatLayer("kills", (g, t) => {
+      g.addColorStop(0,   `rgba(255,220,80,${t * 0.85})`);
+      g.addColorStop(0.3, `rgba(255,140,0,${t * 0.55})`);
+      g.addColorStop(0.7, `rgba(200,50,0,${t * 0.25})`);
+      g.addColorStop(1,   "rgba(100,0,0,0)");
+    });
+  }
+
+  // Extraction zones with usage rate
+  if (atogExtract.checked) {
+    for (const z of aggregateData.extraction_zones) {
+      const rate = z.total > 0 ? z.survivors / z.total : 0;
+      const r    = 28 + rate * 22;
+      const grad = ctx.createRadialGradient(z.px, z.py, 0, z.px, z.py, r);
+      grad.addColorStop(0,   `rgba(102,187,106,${0.2 + rate * 0.3})`);
+      grad.addColorStop(0.5, `rgba(76,175,80,${0.12 + rate * 0.15})`);
+      grad.addColorStop(1,   "rgba(56,142,60,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath(); ctx.arc(z.px, z.py, r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(102,187,106,${0.5 + rate * 0.4})`;
+      ctx.lineWidth   = 1.2 / vp.scale;
+      ctx.setLineDash([4 / vp.scale, 3 / vp.scale]);
+      ctx.beginPath(); ctx.arc(z.px, z.py, r * 0.65, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = `rgba(102,187,106,${0.7 + rate * 0.3})`;
+      ctx.font      = `bold ${9 / vp.scale}px monospace`;
+      ctx.textAlign = "center";
+      const pct = Math.round(rate * 100);
+      ctx.fillText(`${z.label} ${pct}%`, z.px, z.py + r * 0.68 + 11 / vp.scale);
+    }
+  }
+
+  ctx.restore();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -44,6 +44,19 @@
             <option value="loot">Most Loot</option>
           </select>
         </label>
+        <label>Outcome
+          <select id="filter-outcome">
+            <option value="">All Outcomes</option>
+            <option value="died">Died</option>
+            <option value="survived">Survived</option>
+            <option value="extracted">Extracted</option>
+            <option value="ragequit">Rage-quit?</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="panel" id="analysis-panel">
+        <button id="btn-analysis" title="Cross-match aggregate view for Level Designers">Map Analysis</button>
       </section>
 
       <section class="panel" id="match-list-panel">
@@ -95,6 +108,20 @@
       <div id="player-popup" class="hidden"></div>
       <!-- Inference layer badge -->
       <div id="infer-badge" class="hidden">~ INFERRED BOT DATA &nbsp;·&nbsp; Cross-match analysis from real matches</div>
+      <!-- Analysis mode overlay controls -->
+      <div id="analysis-controls" class="hidden">
+        <div id="analysis-title"></div>
+        <div id="analysis-layers">
+          <label class="toggle a-tog tog-active"><input type="checkbox" id="atog-movement" checked /> Movement</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-kills" /> Kills</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-deaths" /> Deaths</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-loot" /> Loot</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-extract" checked /> Extraction</label>
+        </div>
+        <button id="btn-exit-analysis">&#x2715; Exit Analysis</button>
+      </div>
+      <!-- Tooltip for timeline event ticks -->
+      <div id="ev-tooltip" class="hidden"></div>
 
       <!-- Timeline -->
       <div id="timeline" class="hidden">
