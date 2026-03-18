@@ -20,6 +20,31 @@ const C = {
   pvp:    "#ffffff",                                     // white — rare PvP kill
 };
 
+// Inferred extraction zone clusters per map (from cross-match last-position analysis)
+// Methodology: cluster last-known positions of all no-death human sessions; peaks = extraction points
+const EXTRACTION_ZONES = {
+  AmbroseValley: [
+    { px: 499, py: 832, n: 41 },
+    { px: 653, py: 576, n: 38 },
+    { px: 141, py: 422, n: 30 },
+    { px: 653, py: 269, n: 24 },
+    { px: 243, py: 781, n: 17 },
+  ],
+  GrandRift: [
+    { px: 832, py: 243, n: 8  },
+    { px: 243, py: 269, n: 5  },
+    { px: 269, py: 704, n: 4  },
+    { px: 678, py: 755, n: 3  },
+  ],
+  Lockdown: [
+    { px: 832, py: 397, n: 14 },
+    { px: 602, py: 704, n: 11 },
+    { px: 269, py: 678, n:  9 },
+    { px: 141, py: 525, n:  6 },
+    { px: 653, py: 166, n:  4 },
+  ],
+};
+
 // ── State ────────────────────────────────────────────────────────────────────
 let allMatches      = [];
 let filteredMatches = [];   // kept in sync with renderMatchList for prev/next nav
@@ -109,11 +134,16 @@ function renderMatchList() {
     // Suspicious: died to bots >> bot kills (ratio > 2.5)
     const suspicious = m.bot_kills === 0 && m.bot_killed > 3;
   const hasAgent   = m.agents > 0;
-    const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
+  const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
+  const OUTCOME_ICON = { extracted:"&#x2191;", survived:"&#9679;", died:"&#x2715;", ragequit:"&#x21BA;", unknown:"" };
+  const OUTCOME_COL  = { extracted:"#66bb6a",  survived:"#90caf9",  died:"#ef5350",  ragequit:"#bdbdbd",  unknown:"#555" };
+  const oc   = m.outcome || "unknown";
+  const ocBadge = oc !== "unknown"
+    ? ` <span style="color:${OUTCOME_COL[oc]};font-size:9px;font-weight:bold" title="Outcome: ${oc}">${OUTCOME_ICON[oc]}</span>` : "";
     return `<li data-id="${m.id}" ${suspicious ? 'style="border-left-color:#ff9800"' : ''}>
       <div class="match-title">
         <span class="match-map-tag tag-${m.map}">${shortMap(m.map)}</span>
-        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}
+        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}${ocBadge}
       </div>
       <div class="match-meta">
         ${day} · ${dur} · <b>${m.total_events}</b> ev · H:<b>${m.humans}</b>${m.agents > 0 ? ` A:<b style="color:${C.agent}">${m.agents}</b>` : ""} B:<b>${m.bots}</b>
@@ -186,6 +216,10 @@ async function loadMatch(id) {
     ? `<span class="stat-sep">|</span>Agents: <b style="color:${C.agent}">${m.agents}</b>` : "";
   const pvpTag = m.pvp_kills > 0
     ? `<span class="stat-sep">|</span><b style="color:#fff">PvP: ${m.pvp_kills}</b>` : "";
+  const OC_COL  = { extracted:"#66bb6a", survived:"#90caf9", died:"#ef5350", ragequit:"#bdbdbd", unknown:"#888" };
+  const OC_LABEL= { extracted:"Extracted", survived:"Survived", died:"Died", ragequit:"Rage-quit?", unknown:"Unknown" };
+  const oc2 = m.outcome || "unknown";
+  const outcomeTag = `<span class="stat-sep">|</span>Outcome: <b style="color:${OC_COL[oc2]}">${OC_LABEL[oc2]}</b>`;
   infoStats.innerHTML =
     `Duration: <b>${fmtTime(m.duration)}</b><span class="stat-sep">|</span>` +
     `Events: <b>${m.total_events}</b><span class="stat-sep">|</span>` +
@@ -193,7 +227,7 @@ async function loadMatch(id) {
     `Bots: <b>${m.bots}</b><span class="stat-sep">|</span>` +
     `BotKills: <b>${m.bot_kills}</b><span class="stat-sep">|</span>` +
     `Died to bots: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
-    `Loot: <b>${m.loot}</b>${pvpTag}`;
+    `Loot: <b>${m.loot}</b>${pvpTag}${outcomeTag}`;
 
   scrubber.max   = m.duration;
   scrubber.value = 0;
@@ -465,6 +499,7 @@ function draw(now) {
     return;
   }
 
+  drawExtractionZones();
   if (togPaths.checked)  drawPaths();
   if (togEvents.checked) drawEventMarkers();
   drawGhostDots();
@@ -473,6 +508,38 @@ function draw(now) {
 
   ctx.restore();
   drawEffects(now);
+}
+
+// ── Extraction zones ──────────────────────────────────────────────────────────
+function drawExtractionZones() {
+  if (!currentMatch) return;
+  const zones = EXTRACTION_ZONES[currentMatch.meta.map];
+  if (!zones) return;
+  const maxN = Math.max(...zones.map(z => z.n));
+  ctx.save();
+  for (const z of zones) {
+    const alpha = 0.18 + (z.n / maxN) * 0.22;
+    const r     = 28 + (z.n / maxN) * 18;
+    // Soft green fill
+    const grad = ctx.createRadialGradient(z.px, z.py, 0, z.px, z.py, r);
+    grad.addColorStop(0,   `rgba(102,187,106,${alpha})`);
+    grad.addColorStop(0.5, `rgba(76,175,80,${alpha * 0.5})`);
+    grad.addColorStop(1,   "rgba(56,142,60,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(z.px, z.py, r, 0, Math.PI * 2); ctx.fill();
+    // Dashed ring
+    ctx.strokeStyle = `rgba(102,187,106,${alpha * 2})`;
+    ctx.lineWidth   = 1 / vp.scale;
+    ctx.setLineDash([4 / vp.scale, 3 / vp.scale]);
+    ctx.beginPath(); ctx.arc(z.px, z.py, r * 0.65, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    // Label
+    ctx.fillStyle   = `rgba(102,187,106,${alpha * 3})`;
+    ctx.font        = `${9 / vp.scale}px monospace`;
+    ctx.textAlign   = "center";
+    ctx.fillText("EXTRACT", z.px, z.py + r * 0.68 + 10 / vp.scale);
+  }
+  ctx.restore();
 }
 
 // ── Paths ──────────────────────────────────────────────────────────────────────
@@ -1063,7 +1130,8 @@ function buildLegend() {
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.storm}" stroke-width="0.8" opacity="0.6"/></svg></div>Storm death</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,2 16,9 9,16 2,9" fill="${C.loot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/><polygon points="9,4 13,9 9,10" fill="rgba(255,255,255,0.4)"/></svg></div>Loot</div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(80,0,120,0.5)" stroke="rgba(200,100,255,0.9)" stroke-width="1.5" stroke-dasharray="3,2"/></svg></div>Storm zone</div>
-    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(30,80,180,0.35)" stroke="rgba(100,180,255,0.5)" stroke-width="1"/></svg></div><span style="color:#ffd54f">~ Bot density</span></div>
+    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(76,175,80,0.25)" stroke="rgba(102,187,106,0.7)" stroke-width="1" stroke-dasharray="3,2"/></svg></div><span style="color:#66bb6a">Extract zone</span></div>
+    <div class="legend-row" style="margin-top:2px;padding-top:4px;border-top:1px solid #252530"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(30,80,180,0.35)" stroke="rgba(100,180,255,0.5)" stroke-width="1"/></svg></div><span style="color:#ffd54f">~ Bot density</span></div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="rgba(255,213,79,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/></svg></div><span style="color:#ffd54f">~ Patrol routes</span></div>
     <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="none" stroke="rgba(255,213,79,0.6)" stroke-width="1" stroke-dasharray="3,3"/><circle cx="9" cy="9" r="1.5" fill="rgba(255,213,79,0.7)"/></svg></div><span style="color:#ffd54f">~ Kill range</span></div>
   `;
