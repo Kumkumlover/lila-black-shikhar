@@ -1077,14 +1077,14 @@ function drawInference() {
     ctx.beginPath(); ctx.arc(cx2, cy2, r, 0, Math.PI * 2); ctx.fill();
   }
 
-  // ── 2. Patrol route ghost paths (amber, very low opacity dashed) ─────────────
+  // ── 2. Patrol route ghost paths (amber dashed) ───────────────────────────────
   ctx.lineJoin  = "round";
   ctx.lineCap   = "round";
-  ctx.lineWidth = 0.8 / vp.scale;
-  ctx.setLineDash([4 / vp.scale, 4 / vp.scale]);
+  ctx.lineWidth = 1.5 / vp.scale;
+  ctx.setLineDash([5 / vp.scale, 4 / vp.scale]);
   for (const route of inf.routes) {
     if (route.length < 2) continue;
-    ctx.strokeStyle = "rgba(255,213,79,0.07)";
+    ctx.strokeStyle = "rgba(255,213,79,0.28)";
     ctx.beginPath();
     ctx.moveTo(route[0][0], route[0][1]);
     for (let i = 1; i < route.length; i++) ctx.lineTo(route[i][0], route[i][1]);
