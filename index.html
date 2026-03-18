@@ -110,15 +110,20 @@
       <div id="infer-badge" class="hidden">~ INFERRED BOT DATA &nbsp;·&nbsp; Cross-match analysis from real matches</div>
       <!-- Analysis mode overlay controls -->
       <div id="analysis-controls" class="hidden">
+        <select id="analysis-map-sel" title="Select map">
+          <option value="AmbroseValley">Ambrose Valley</option>
+          <option value="GrandRift">Grand Rift</option>
+          <option value="Lockdown">Lockdown</option>
+        </select>
         <div id="analysis-title"></div>
         <div id="analysis-layers">
-          <label class="toggle a-tog tog-active"><input type="checkbox" id="atog-movement" checked /> Movement</label>
+          <label class="toggle a-tog"><input type="checkbox" id="atog-movement" checked /> Movement</label>
           <label class="toggle a-tog"><input type="checkbox" id="atog-kills" /> Kills</label>
           <label class="toggle a-tog"><input type="checkbox" id="atog-deaths" /> Deaths</label>
           <label class="toggle a-tog"><input type="checkbox" id="atog-loot" /> Loot</label>
           <label class="toggle a-tog"><input type="checkbox" id="atog-extract" checked /> Extraction</label>
         </div>
-        <button id="btn-exit-analysis">&#x2715; Exit Analysis</button>
+        <button id="btn-exit-analysis">&#x2715; Exit</button>
       </div>
       <!-- Tooltip for timeline event ticks -->
       <div id="ev-tooltip" class="hidden"></div>

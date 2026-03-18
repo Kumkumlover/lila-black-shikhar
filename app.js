@@ -581,6 +581,7 @@ function interpolatePosition(uid, t) {
 
 // ── Draw ──────────────────────────────────────────────────────────────────────
 function draw(now) {
+  if (analysisMode) { drawAnalysis(); return; }   // analysis mode takes over canvas
   if (!mapImage) return;
   now = now || performance.now();
 
@@ -600,7 +601,6 @@ function draw(now) {
     return;
   }
 
-  drawExtractionZones();
   if (togPaths.checked)  drawPaths();
   if (togEvents.checked) drawEventMarkers();
   drawGhostDots();
@@ -1259,32 +1259,37 @@ btnAnalysis.addEventListener("click", () => enterAnalysisMode());
 btnExitAnalysis.addEventListener("click", () => exitAnalysisMode());
 [atogMovement, atogKills, atogDeaths, atogLoot, atogExtract].forEach(t =>
   t.addEventListener("change", drawAnalysis));
+document.getElementById("analysis-map-sel").addEventListener("change", e => {
+  enterAnalysisMode(e.target.value);
+});
 
-async function enterAnalysisMode() {
-  const mapName = filterMap.value || (currentMatch ? currentMatch.meta.map : "AmbroseValley");
+async function enterAnalysisMode(mapName) {
+  if (!mapName) {
+    // Default: use map filter, then current match map, then AV
+    const sel = document.getElementById("analysis-map-sel");
+    mapName = filterMap.value || (currentMatch ? currentMatch.meta.map : "AmbroseValley");
+    sel.value = mapName;
+  }
   analysisMode = true;
   btnAnalysis.classList.add("active");
   stopPlayback();
 
-  // Load map image if needed
-  if (!mapImage) mapImage = await loadImage(MAP_IMAGES[mapName]);
-  else if (currentMatch && currentMatch.meta.map !== mapName)
-    mapImage = await loadImage(MAP_IMAGES[mapName]);
+  // Load map image for this specific map
+  mapImage = await loadImage(MAP_IMAGES[mapName]);
 
   // Load aggregate data
-  if (aggregateCache[mapName]) {
-    aggregateData = aggregateCache[mapName];
-  } else {
+  if (!aggregateCache[mapName]) {
     const res = await fetch(`data/aggregate/${mapName}.json`);
     aggregateCache[mapName] = await res.json();
-    aggregateData = aggregateCache[mapName];
   }
+  aggregateData = aggregateCache[mapName];
 
   emptyState.classList.add("hidden");
   topbar.classList.add("hidden");
   timeline.classList.add("hidden");
   analysisControls.classList.remove("hidden");
-  analysisTitle.textContent = `MAP ANALYSIS — ${mapName.replace("AmbroseValley","Ambrose Valley")} · ${aggregateData.matches} matches`;
+  const label = mapName.replace("AmbroseValley","Ambrose Valley").replace("GrandRift","Grand Rift");
+  analysisTitle.textContent = `${label} · ${aggregateData.matches} matches`;
 
   resizeCanvas();
   fitViewport();
