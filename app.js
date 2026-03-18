@@ -371,18 +371,30 @@ function computeStormCenter() {
   const stormKilled = new Set(
     currentMatch.events.filter(e => e.ev === "KilledByStorm").map(e => e.uid)
   );
-  const late = currentMatch.events.filter(e =>
-    e.ev === "Position" && e.t > dur * 0.50 && e.px != null && !stormKilled.has(e.uid)
-  );
-  if (late.length < 6) { stormCenter = { ...MAP_CENTER }; return; }
-  const xs = late.map(p => p.px).sort((a, b) => a - b);
-  const ys = late.map(p => p.py).sort((a, b) => a - b);
-  const mid = Math.floor(xs.length / 2);
-  // Clamp to avoid an extreme outlier pulling the center off-map
-  stormCenter = {
-    x: Math.max(100, Math.min(924, xs[mid])),
-    y: Math.max(100, Math.min(924, ys[mid])),
-  };
+
+  // Use the final 20% of match time — ring is at its smallest, so all alive
+  // players MUST be inside it. Their mean position ≈ ring center.
+  // Fall back to final 35% if too few pings in the last 20%.
+  for (const cutoff of [0.80, 0.65, 0.50]) {
+    const late = currentMatch.events.filter(e =>
+      e.ev === "Position" && e.t > dur * cutoff && e.px != null && !stormKilled.has(e.uid)
+    );
+    if (late.length < 5) continue;
+    // Trim outliers: remove top/bottom 10% on each axis before averaging
+    const xs = late.map(p => p.px).sort((a, b) => a - b);
+    const ys = late.map(p => p.py).sort((a, b) => a - b);
+    const trim = Math.max(1, Math.floor(xs.length * 0.10));
+    const txs  = xs.slice(trim, xs.length - trim);
+    const tys  = ys.slice(trim, ys.length - trim);
+    const mx   = txs.reduce((s, v) => s + v, 0) / txs.length;
+    const my   = tys.reduce((s, v) => s + v, 0) / tys.length;
+    stormCenter = {
+      x: Math.max(80, Math.min(944, mx)),
+      y: Math.max(80, Math.min(944, my)),
+    };
+    return;
+  }
+  stormCenter = { ...MAP_CENTER };
 }
 
 // Phased ring radius: wait → shrink → wait → shrink pattern (matches real BR/extraction games)
