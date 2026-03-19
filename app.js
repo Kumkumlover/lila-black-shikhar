@@ -165,12 +165,12 @@ function renderMatchList() {
     const day = m.day.replace("February_", "Feb ");
     // Suspicious: died to bots >> bot kills (ratio > 2.5)
     const suspicious = m.bot_kills === 0 && m.bot_killed > 3;
-  const hasAgent   = m.agents > 0;
-  const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
-  const OUTCOME_LABEL = { extracted:"Extracted", survived:"Survived", died:"Died", ragequit:"Rage-quit?", unknown:"" };
-  const oc      = m.outcome || "unknown";
-  const ocBadge = oc !== "unknown"
-    ? ` <span class="outcome-badge outcome-${oc}">${OUTCOME_LABEL[oc]}</span>` : "";
+    const hasAgent   = m.agents > 0;
+    const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
+    const OUTCOME_LABEL = { extracted:"Extracted", survived:"Survived", died:"Died", ragequit:"Rage-quit?", unknown:"" };
+    const oc      = m.outcome || "unknown";
+    const ocBadge = oc !== "unknown"
+      ? ` <span class="outcome-badge outcome-${oc}">${OUTCOME_LABEL[oc]}</span>` : "";
     return `<li data-id="${m.id}" ${suspicious ? 'style="border-left-color:#ff9800"' : ''}>
       <div class="match-title">
         <span class="match-map-tag tag-${m.map}">${shortMap(m.map)}</span>
@@ -300,9 +300,9 @@ function loadImage(src) {
 function buildEventMarkers() {
   const dur = currentMatch.meta.duration;
   const col   = { Kill:"#ff9800", BotKill:"#ff9800", Killed:"#f44336",
-                  KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
-  const label = { Kill:"PvP Kill", BotKill:"Bot Kill", Killed:"Died",
-                  KilledByStorm:"Storm Death", Loot:"Loot" };
+                  BotKilled:"#f44336", KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
+  const label = { Kill:"PvP Kill", BotKill:"Bot Kill", Killed:"Died (PvP)",
+                  BotKilled:"Killed by Bot", KilledByStorm:"Storm Death", Loot:"Loot" };
   evMarkers.innerHTML = currentMatch.events
     .filter(e => col[e.ev])
     .map(e => {
@@ -325,7 +325,7 @@ function buildEventMarkers() {
     // Click to scrub to that time
     tick.addEventListener("click", e => {
       e.stopPropagation();
-      const t = parseInt(tick.style.left) / 100 * dur;
+      const t = parseFloat(tick.style.left) / 100 * dur;
       currentTime = Math.round(t);
       scrubber.valueAsNumber = currentTime;
       updateTimeLabel(currentTime);
@@ -344,7 +344,7 @@ function resizeCanvas() {
 
 function fitViewport() {
   const W = canvas.width, H = canvas.height;
-  const s  = Math.max(W / MAP_SIZE, H / MAP_SIZE);
+  const s  = Math.min(W / MAP_SIZE, H / MAP_SIZE);
   vp.scale = s;
   vp.ox    = (W - MAP_SIZE * s) / 2;
   vp.oy    = (H - MAP_SIZE * s) / 2;
@@ -681,7 +681,7 @@ function drawPaths() {
 function drawEventMarkers() {
   const visible = currentMatch.events.filter(e =>
     e.t <= currentTime &&
-    ["Kill","Killed","BotKill","KilledByStorm","Loot"].includes(e.ev) &&
+    ["Kill","Killed","BotKilled","BotKill","KilledByStorm","Loot"].includes(e.ev) &&
     e.px != null
   );
   const R = 5 / vp.scale;

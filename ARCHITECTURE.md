@@ -210,29 +210,76 @@ Only the first interaction with each chest is retained.
 
 ```
 init()
-  └── fetch data/index.json          → allMatches[], renderMatchList()
+  ├── fetch data/index.json          → allMatches[], renderMatchList()
+  └── showHome()                     → build and display analytics dashboard
 
 loadMatch(id)
   └── fetch data/matches/{id}.json   → currentMatch
-      buildPlayerPositions()          → playerPositions{uid: [{t,px,py,type}]}
-      buildEventMarkers()             → scrubber tick marks
-      fitViewport()                   → vp.scale, vp.ox, vp.oy
-      startAmbient()                  → ambient RAF for storm animation when paused
+      ├── hideHome()                  → switch from dashboard to canvas
+      ├── buildPlayerPositions()      → playerPositions{uid: [{t,px,py,type}]}
+      ├── loadInferenceData(map)      → cross-match bot data (cached per map)
+      ├── computeStormCenter()        → estimated safe-zone center from late-game positions
+      ├── buildEventMarkers()         → scrubber tick marks
+      ├── fitViewport()               → vp.scale, vp.ox, vp.oy
+      └── startAmbient()              → ambient RAF for storm animation when paused
+
+enterAnalysisMode(map)
+  ├── hideHome()
+  └── fetch data/aggregate/{map}.json → aggregateData (movement/kills/deaths/loot/dwell)
 ```
 
 ### Rendering Pipeline (per frame)
 
 ```
-draw(now)
-  ├── ctx.drawImage(mapImage)         — minimap background
-  ├── drawHeatmap()                   — grid-based density heatmap [optional layer]
-  ├── drawPaths()                     — trail lines per player up to currentTime
-  ├── drawEventMarkers()              — kill/death/loot icons at event positions
-  ├── drawGhostDots()                 — dashed ring at last known position (inactive players)
-  ├── drawLiveDots()                  — interpolated current position per active player
-  ├── drawStorm(now)                  — animated storm ring (estimated from match duration)
-  └── drawEffects(now)                — particle FX spawned at event moments
+draw(now)                              — Match playback mode
+  ├── ctx.drawImage(mapImage)          — minimap background
+  ├── drawInference()                  — cross-match bot heatmap + patrol routes [optional]
+  ├── drawHeatmap()                    — per-match position density heatmap [optional]
+  ├── drawExtractionZones()            — inferred extraction zones with usage data
+  ├── drawPaths()                      — trail lines per player up to currentTime
+  ├── drawEventMarkers()               — kill/death/loot icons at event positions
+  ├── drawGhostDots()                  — dashed ring at last known position (inactive players)
+  ├── drawLiveDots()                   — interpolated current position per active player
+  ├── drawStorm(now)                   — animated phased storm ring with lightning
+  └── drawEffects(now)                 — particle FX spawned at event moments
+
+drawAnalysis()                         — Map Analysis mode (aggregate heatmaps)
+  ├── ctx.drawImage(mapImage)          — minimap background
+  ├── drawHeatLayer("movement")        — blue heatmap, log-scale intensity, hotspot labels
+  ├── drawHeatLayer("loot")            — green heatmap with hotspot labels
+  ├── dwell layer (custom)             — amber, 60th-percentile floor, top-40% only
+  ├── drawHeatLayer("deaths")          — purple/magenta with hotspot labels
+  ├── drawHeatLayer("kills")           — yellow/orange fire palette with hotspot labels
+  └── extraction zones                 — green circles sized by usage rate (% of survivors)
 ```
+
+### Home / Analytics Dashboard
+
+On load and when returning from a match, `showHome()` displays a stats dashboard built
+from `allMatches[]` (no additional fetches). Rendered once (cached via `dataset.built` flag).
+
+**KPI cards:** Total matches, total playtime, avg duration, total bot kills, survival %.
+**Charts (inline SVG):** Outcomes by map (stacked bars), duration histogram (2-min buckets),
+matches per day (line), survival rate per day (line).
+**Tables:** Bot engagement per map, extraction zone usage (async-loaded from aggregate JSON).
+
+### Map Analysis Mode (`generate_aggregate.py` → `drawAnalysis()`)
+
+Offline Python pipeline (`generate_aggregate.py`) processes all 785 match JSONs per map into
+80×80 density grids for movement, kills, deaths, loot, and dwell time. Output:
+`data/aggregate/{map}.json`.
+
+**Dwell time computation:** For each human player, sum seconds between consecutive Position
+pings per grid cell. Gap capped at 30s to exclude AFK/disconnect. Dwell is distinct from
+movement frequency — a cell visited once for 60s has high dwell but low movement count.
+
+**Rendering:** Each heatmap layer uses log-scale intensity
+(`Math.pow(Math.log(n+1)/Math.log(max+1), 0.65)`) for visible peaks without washing out
+detail. The dwell layer uses a 60th-percentile floor — only the top 40% of cells by dwell
+value are rendered, removing ubiquitous transit-corridor noise.
+
+**Hotspot labels:** Top 4 spatially-distinct cells per layer are labelled with `XX%` of total
+(diamond pin + dark pill badge). Minimum `3.5 × cell_size` deduplication distance.
 
 ### Smooth Position Interpolation
 
@@ -260,18 +307,27 @@ Pan (drag), zoom (scroll wheel or buttons), and Fit are all transformations of
 ### Storm Visualisation
 
 The dataset contains no storm boundary coordinates — only `KilledByStorm` death events.
-The storm ring is an **estimated** visualisation:
+The storm ring is an **estimated** visualisation using a 5-phase model:
 
 ```javascript
-// Safe zone radius: eased shrink from STORM_START_R (650) to STORM_END_R (80)
-// over match duration. Ease-in curve: r = start - (start - end) * frac²
+// Phased: [start_frac, end_frac, r_start, r_end, wait_frac]
+STORM_PHASES = [
+  [0.00, 0.22, 680, 490, 0.55],  // phase 1 — slow start
+  [0.22, 0.47, 490, 300, 0.40],  // phase 2
+  [0.47, 0.68, 300, 170, 0.35],  // phase 3
+  [0.68, 0.86, 170,  88, 0.30],  // phase 4
+  [0.86, 1.00,  88,  42, 0.20],  // phase 5 — rapid final collapse
+];
 ```
 
-This is a visual approximation. The actual storm in-game may use off-centre circles,
-rectangular zones, or multi-phase timing. The `KilledByStorm` event positions (39 total
-across 796 matches) indicate players were at the storm boundary at those coordinates
-and timestamps — usable as ground-truth calibration points if storm zone data becomes
-available.
+**Storm center estimation:** The median position of all alive human players in the final
+20% of match duration, with outlier trimming (top/bottom 10% per axis). Falls back to
+final 35% or 50% if too few pings, then to map center (512, 512).
+
+**Visual layers:** Dark purple overlay outside safe zone, swirling fog gradients,
+glowing wall at boundary, seeded lightning bolts (regenerated per frame), inner vignette.
+
+This remains a visual approximation — see Impossibilities section below.
 
 ---
 
@@ -293,9 +349,14 @@ Array of match metadata objects for the browser sidebar:
   "bot_killed": 11,
   "loot": 25,
   "pvp_kills": 0,
-  "storm_deaths": 0
+  "storm_deaths": 0,
+  "outcome": "died"
 }
 ```
+
+`outcome` values: `"died"` (killed by bot/player/storm), `"survived"` (telemetry ends
+without death, last position near extraction zone), `"extracted"` (inferred successful
+extraction), `"ragequit"` (short match, no meaningful engagement before disconnect).
 
 ### `data/matches/{id}.json`
 Full event array for one match, loaded on demand:
@@ -312,6 +373,38 @@ Full event array for one match, loaded on demand:
 
 `kpx`/`kpy` — victim's last known pixel position, present only on `BotKill` events
 where a victim bot could be matched within 50 world units.
+
+### `data/aggregate/{map}.json`
+Cross-match aggregate heatmaps generated offline by `generate_aggregate.py`:
+```json
+{
+  "map": "AmbroseValley",
+  "matches": 563,
+  "heatmaps": {
+    "movement": { "cells": [[gx, gy, count], ...], "max": 4812, "grid": 80 },
+    "kills":    { "cells": [...], "max": 72, "grid": 80 },
+    "deaths":   { "cells": [...], "max": 18, "grid": 80 },
+    "loot":     { "cells": [...], "max": 96, "grid": 80 },
+    "dwell":    { "cells": [[gx, gy, seconds], ...], "max": 1984.0, "grid": 80 }
+  },
+  "extraction_zones": [
+    { "px": 499, "py": 832, "label": "South", "survivors": 41, "total": 563 }
+  ]
+}
+```
+
+Cells use `[grid_x, grid_y, value]` format. Only non-zero cells are stored. Dwell values
+are floats (accumulated seconds); all others are integer counts.
+
+### `data/inference/{map}.json`
+Cross-match inferred bot positions and patrol routes:
+```json
+{
+  "heatmap": { "cells": [[gx, gy, count], ...], "max": N, "grid": 80 },
+  "routes": [[[px, py], [px, py], ...], ...],
+  "engage_px": 45
+}
+```
 
 ---
 
@@ -339,4 +432,72 @@ rewrites so direct URL navigation works correctly.
 | 4 | Map origin/scale derived from data observation | If map bounds change in a game update, coordinate mapping would silently shift |
 | 5 | Kill victim position limited by 5s GPS resolution | BotKill marker may be up to 5s of movement away from true death location |
 | 6 | Y (elevation) not used in 2D projection | Players on different floors appear overlapping on the minimap |
-| 7 | 3 PvP kills across 796 matches | Human vs human combat data is too sparse for statistical analysis |
+| 7 | 3 PvP kills across 785 matches | Human vs human combat data is too sparse for statistical analysis |
+| 8 | Dwell time includes movement dwell | A player walking through a cell accumulates dwell even if not lingering; mitigated by 60th-percentile floor in rendering |
+| 9 | Extraction zone locations are inferred | No server data for zone positions — derived from clustering last-known positions of surviving players |
+| 10 | Outcome classification is heuristic | "extracted" vs "survived" vs "ragequit" are inferred from telemetry patterns, not server events |
+
+---
+
+## Impossibilities — What This Tool Cannot Do
+
+These are fundamental constraints imposed by the data schema. No amount of engineering
+can work around them without additional telemetry from the game server.
+
+### 1. True Extraction Events
+**What's missing:** An `Extraction` event type with position, timestamp, and match ID.
+**Impact:** The tool cannot definitively tell whether a player successfully extracted or
+simply disconnected. Outcome classification (`extracted` / `survived` / `ragequit`) is
+a heuristic based on last position proximity to inferred extraction zones, match duration
+remaining, and prior engagement. False positives and false negatives are unavoidable.
+**What it would unlock:** Accurate extraction funnels, extraction-per-zone rate with
+confidence, session completion metrics.
+
+### 2. Actual Storm Zone Geometry
+**What's missing:** Server-authoritative storm zone center, radius, and phase timestamps.
+**Impact:** The storm visualisation is a cosmetic estimate derived from the median position
+of alive players in the late game. The actual storm may be off-center, non-circular, have
+different phase timing, or use a rectangular/polygon shape. Storm center is estimated
+correctly in ~60% of matches (based on `KilledByStorm` position cross-validation); in the
+remaining ~40%, the estimated center may be 50–150px from the true center.
+**What it would unlock:** Accurate safe-zone rendering, storm-pressure analysis (how much
+time players spend near the wall), phase-by-phase lethality metrics.
+
+### 3. Bot Spawn and Despawn Events
+**What's missing:** Events for bot creation, destruction, and respawn with position data.
+**Impact:** Bot population over time cannot be tracked. The 93% missing-bot-telemetry
+rate means most bot behavior is completely invisible. The inference layer (cross-match bot
+density, patrol routes) is a statistical approximation from the ~7% of matches that have
+bot files. Actual bot density in any specific match is unknown.
+**What it would unlock:** True bot-density heatmaps per match, spawn/despawn timing
+analysis, bot-to-player encounter forecasting.
+
+### 4. Loot Item Identity and Value
+**What's missing:** The `Loot` event has no item ID, rarity, or value field.
+**Impact:** All loot pickups are treated equally. Cannot distinguish a common heal from a
+legendary weapon. Loot heatmaps show collection frequency, not economic value. Level
+designers cannot evaluate whether high-value loot draws players to intended locations.
+**What it would unlock:** Loot-value heatmaps, risk-reward analysis per area, economy
+balance metrics.
+
+### 5. Player Intent and Session Context
+**What's missing:** Queue type (solo/squad), loadout, player level/rank, pre-match intent.
+**Impact:** Cannot segment player behavior by skill, experience, or playstyle. A new
+player dying in 30 seconds looks identical to a veteran speedrunning a specific route. All
+aggregate statistics average across the entire skill spectrum.
+**What it would unlock:** Skill-segmented heatmaps, new-player-experience analysis,
+difficulty curve evaluation per map area.
+
+### 6. Real-Time Server State
+**What's missing:** Server tick data, network latency, server-side hit registration.
+**Impact:** Kill positions are based on client telemetry with 5-second GPS resolution.
+The actual server-side kill position may differ due to lag compensation. Deaths that feel
+unfair to players (desync kills) cannot be identified from this data.
+
+### 7. Multi-Floor / Elevation Separation
+**What's missing:** Floor or zone identifier per position ping. The `y` (elevation) column
+exists but map images are 2D.
+**Impact:** On maps with vertical layers (buildings, caves, bridges), players on different
+floors appear at the same 2D position. Heatmaps and kill locations may show false clusters
+where vertically separated encounters overlap on the minimap.
+**What it would unlock:** Per-floor heatmaps, vertical engagement analysis, 3D pathing.

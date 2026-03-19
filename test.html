@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>LILA BLACK — Test Suite</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0a0a0c; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 13px; padding: 24px 32px; }
+    h1 { font-size: 18px; color: #e8c84a; margin-bottom: 6px; }
+    .sub { font-size: 11px; color: #666; margin-bottom: 20px; }
+    .section { margin-bottom: 18px; }
+    .section h2 { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; border-bottom: 1px solid #252530; padding-bottom: 4px; }
+    .row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
+    .pass { color: #66bb6a; } .pass::before { content: "✓ "; }
+    .fail { color: #ef5350; font-weight: 600; } .fail::before { content: "✗ "; }
+    .warn { color: #ffa726; } .warn::before { content: "⚠ "; }
+    .info { color: #4fc3f7; } .info::before { content: "ℹ "; }
+    .summary { margin-top: 20px; padding: 14px; border: 1px solid #252530; border-radius: 8px; background: #121216; }
+    .summary span { font-family: monospace; font-weight: 700; }
+    #log { max-height: 80vh; overflow-y: auto; }
+  </style>
+</head>
+<body>
+  <h1>LILA BLACK — Test Suite</h1>
+  <p class="sub">Validates data integrity, feature correctness, and rendering pipeline for the Player Journey Visualizer.</p>
+  <div id="log"></div>
+  <script>
+const log = document.getElementById("log");
+let passCount = 0, failCount = 0, warnCount = 0;
+
+function section(title) {
+  const d = document.createElement("div");
+  d.className = "section";
+  d.innerHTML = `<h2>${title}</h2>`;
+  log.appendChild(d);
+  return d;
+}
+function emit(parent, cls, msg) {
+  const r = document.createElement("div");
+  r.className = "row " + cls;
+  r.textContent = msg;
+  parent.appendChild(r);
+  if (cls === "pass") passCount++;
+  if (cls === "fail") failCount++;
+  if (cls === "warn") warnCount++;
+}
+function assert(parent, cond, passMsg, failMsg) {
+  emit(parent, cond ? "pass" : "fail", cond ? passMsg : failMsg);
+}
+
+async function fetchJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
+  return r.json();
+}
+
+async function run() {
+  // ═══════════════════════════════════════════════════════════════════════
+  // 1. DATA INTEGRITY — index.json
+  // ═══════════════════════════════════════════════════════════════════════
+  const s1 = section("1. Index Data Integrity (index.json)");
+  let index;
+  try {
+    index = await fetchJSON("data/index.json");
+    emit(s1, "pass", `index.json loaded — ${index.length} matches`);
+  } catch (e) {
+    emit(s1, "fail", `Cannot load index.json: ${e.message}`);
+    return;
+  }
+
+  assert(s1, index.length > 0, `${index.length} matches present`, "No matches in index");
+  assert(s1, Array.isArray(index), "index.json is an array", "index.json is NOT an array");
+
+  // Required fields
+  const REQ = ["id","day","map","duration","total_events","humans","agents","bots","bot_kills","bot_killed","loot","pvp_kills","storm_deaths","outcome"];
+  const first = index[0];
+  for (const f of REQ) {
+    assert(s1, f in first, `Field '${f}' present`, `MISSING field '${f}' in index entries`);
+  }
+
+  // Validate all entries
+  const MAPS = new Set(["AmbroseValley", "GrandRift", "Lockdown"]);
+  const DAYS = new Set(["February_10","February_11","February_12","February_13","February_14"]);
+  const OUTCOMES = new Set(["died","survived","extracted","ragequit","unknown"]);
+  let badMap = 0, badDay = 0, badDur = 0, badOutcome = 0, dupeId = 0;
+  const ids = new Set();
+  for (const m of index) {
+    if (!MAPS.has(m.map)) badMap++;
+    if (!DAYS.has(m.day)) badDay++;
+    if (m.duration <= 0 || m.duration > 3600) badDur++;
+    if (!OUTCOMES.has(m.outcome || "unknown")) badOutcome++;
+    if (ids.has(m.id)) dupeId++;
+    ids.add(m.id);
+  }
+  assert(s1, badMap === 0, "All maps valid", `${badMap} entries have unknown map names`);
+  assert(s1, badDay === 0, "All days valid", `${badDay} entries have unknown day names`);
+  assert(s1, badDur === 0, "All durations in range (0, 3600]", `${badDur} entries have out-of-range durations`);
+  assert(s1, badOutcome === 0, "All outcomes valid", `${badOutcome} entries have unknown outcomes`);
+  assert(s1, dupeId === 0, "No duplicate match IDs", `${dupeId} duplicate match IDs found`);
+
+  // Per-map counts
+  const mapCounts = {};
+  for (const m of index) mapCounts[m.map] = (mapCounts[m.map] || 0) + 1;
+  for (const [mp, cnt] of Object.entries(mapCounts)) emit(s1, "info", `${mp}: ${cnt} matches`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 2. MATCH DATA — sample validation
+  // ═══════════════════════════════════════════════════════════════════════
+  const s2 = section("2. Match Data Validation (sample 10 matches)");
+  const sample = index.slice(0, 10);
+  const VALID_EVS = new Set(["Position","BotPosition","Kill","Killed","BotKill","BotKilled","KilledByStorm","Loot"]);
+  let matchErrors = 0;
+
+  for (const meta of sample) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      assert(s2, match.meta && match.events, `${meta.id.slice(0,8)}: has meta + events`, `${meta.id.slice(0,8)}: missing meta or events`);
+      assert(s2, match.meta.id === meta.id, `${meta.id.slice(0,8)}: meta.id matches`, `${meta.id.slice(0,8)}: meta.id MISMATCH`);
+      assert(s2, match.events.length > 0, `${meta.id.slice(0,8)}: ${match.events.length} events`, `${meta.id.slice(0,8)}: 0 events!`);
+
+      // Validate event structure
+      let badEvType = 0, missingCoord = 0, badTime = 0, botKilledCount = 0;
+      for (const e of match.events) {
+        if (!VALID_EVS.has(e.ev)) badEvType++;
+        if (e.ev === "Position" && (e.px == null || e.py == null)) missingCoord++;
+        if (e.t < 0 || e.t > match.meta.duration + 10) badTime++;
+        if (e.ev === "BotKilled") botKilledCount++;
+      }
+      assert(s2, badEvType === 0, `${meta.id.slice(0,8)}: all event types valid`, `${meta.id.slice(0,8)}: ${badEvType} unknown event types`);
+      if (missingCoord > 0) emit(s2, "warn", `${meta.id.slice(0,8)}: ${missingCoord} Position events without coords`);
+      assert(s2, badTime === 0, `${meta.id.slice(0,8)}: all timestamps in range`, `${meta.id.slice(0,8)}: ${badTime} events outside duration`);
+
+      // Check BotKilled events exist when bot_killed > 0
+      if (meta.bot_killed > 0) {
+        assert(s2, botKilledCount > 0, `${meta.id.slice(0,8)}: BotKilled events present (${botKilledCount})`, `${meta.id.slice(0,8)}: meta.bot_killed=${meta.bot_killed} but 0 BotKilled events in data`);
+      }
+    } catch (e) {
+      emit(s2, "fail", `${meta.id.slice(0,8)}: load failed — ${e.message}`);
+      matchErrors++;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 3. AGGREGATE DATA
+  // ═══════════════════════════════════════════════════════════════════════
+  const s3 = section("3. Aggregate Data Validation");
+  const AGG_LAYERS = ["movement", "kills", "deaths", "loot", "dwell"];
+
+  for (const mp of ["AmbroseValley", "GrandRift", "Lockdown"]) {
+    try {
+      const agg = await fetchJSON(`data/aggregate/${mp}.json`);
+      assert(s3, agg.map === mp, `${mp}: map field correct`, `${mp}: map field is '${agg.map}'`);
+      assert(s3, agg.matches > 0, `${mp}: ${agg.matches} matches`, `${mp}: 0 matches`);
+      assert(s3, agg.heatmaps != null, `${mp}: heatmaps object present`, `${mp}: MISSING heatmaps`);
+
+      for (const layer of AGG_LAYERS) {
+        const hm = agg.heatmaps?.[layer];
+        assert(s3, hm != null, `${mp}.${layer}: present`, `${mp}.${layer}: MISSING`);
+        if (hm) {
+          assert(s3, hm.cells.length > 0, `${mp}.${layer}: ${hm.cells.length} cells`, `${mp}.${layer}: empty`);
+          assert(s3, hm.max > 0, `${mp}.${layer}: max=${hm.max}`, `${mp}.${layer}: max is 0`);
+          assert(s3, hm.grid === 80, `${mp}.${layer}: grid=80`, `${mp}.${layer}: grid=${hm.grid}`);
+          // Validate cell format [gx, gy, value]
+          const badCells = hm.cells.filter(c => c.length !== 3 || c[0] < 0 || c[0] >= 80 || c[1] < 0 || c[1] >= 80 || c[2] <= 0);
+          assert(s3, badCells.length === 0, `${mp}.${layer}: all cells valid`, `${mp}.${layer}: ${badCells.length} invalid cells`);
+        }
+      }
+
+      // Extraction zones
+      assert(s3, agg.extraction_zones?.length > 0, `${mp}: ${agg.extraction_zones.length} extraction zones`, `${mp}: no extraction zones`);
+      for (const z of agg.extraction_zones || []) {
+        assert(s3, z.px >= 0 && z.px <= 1024 && z.py >= 0 && z.py <= 1024, `${mp} zone ${z.label}: coords in range`, `${mp} zone ${z.label}: coords out of range (${z.px},${z.py})`);
+        assert(s3, z.total > 0, `${mp} zone ${z.label}: total=${z.total}`, `${mp} zone ${z.label}: total is 0`);
+      }
+    } catch (e) {
+      emit(s3, "fail", `${mp}: load failed — ${e.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 4. INFERENCE DATA
+  // ═══════════════════════════════════════════════════════════════════════
+  const s4 = section("4. Inference Data Validation");
+  for (const mp of ["AmbroseValley", "GrandRift", "Lockdown"]) {
+    try {
+      const inf = await fetchJSON(`data/inference/${mp}.json`);
+      assert(s4, inf.heatmap?.cells?.length > 0, `${mp}: heatmap cells present`, `${mp}: no heatmap cells`);
+      assert(s4, inf.routes?.length > 0, `${mp}: ${inf.routes.length} patrol routes`, `${mp}: no patrol routes`);
+      assert(s4, typeof inf.engage_px === "number" && inf.engage_px > 0, `${mp}: engage_px=${inf.engage_px}`, `${mp}: invalid engage_px`);
+    } catch (e) {
+      emit(s4, "fail", `${mp}: load failed — ${e.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 5. MAP IMAGES
+  // ═══════════════════════════════════════════════════════════════════════
+  const s5 = section("5. Map Images");
+  const MAP_IMGS = {
+    AmbroseValley: "maps/AmbroseValley_Minimap.png",
+    GrandRift: "maps/GrandRift_Minimap.png",
+    Lockdown: "maps/Lockdown_Minimap.jpg",
+  };
+  for (const [mp, src] of Object.entries(MAP_IMGS)) {
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("load failed"));
+        i.src = src;
+      });
+      assert(s5, img.naturalWidth === 1024 && img.naturalHeight === 1024, `${mp}: 1024×1024`, `${mp}: ${img.naturalWidth}×${img.naturalHeight} (expected 1024×1024)`);
+    } catch (e) {
+      emit(s5, "fail", `${mp}: image failed to load — ${e.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6. APP.JS FEATURE CHECKS (code-level)
+  // ═══════════════════════════════════════════════════════════════════════
+  const s6 = section("6. App.js Feature Presence (code-level)");
+  let appSrc;
+  try {
+    const r = await fetch("app.js");
+    appSrc = await r.text();
+    emit(s6, "pass", `app.js loaded (${appSrc.length} chars)`);
+  } catch (e) {
+    emit(s6, "fail", `Cannot load app.js: ${e.message}`);
+  }
+
+  if (appSrc) {
+    // Core features
+    const features = [
+      ["Match loading", "async function loadMatch"],
+      ["Match list rendering", "function renderMatchList"],
+      ["Player position interpolation", "function interpolatePosition"],
+      ["Storm visualization", "function drawStorm"],
+      ["Heatmap rendering", "function drawHeatmap"],
+      ["Extraction zones", "function drawExtractionZones"],
+      ["Path drawing", "function drawPaths"],
+      ["Event marker drawing", "function drawEventMarkers"],
+      ["Live dot rendering", "function drawLiveDots"],
+      ["Ghost dot rendering", "function drawGhostDots"],
+      ["Particle effects", "function drawEffects"],
+      ["Player popup", "function showPlayerPopup"],
+      ["Playback control", "function startPlayback"],
+      ["Viewport zoom/pan", "function zoomAt"],
+      ["Inference layer", "function drawInference"],
+      ["Map Analysis mode", "function enterAnalysisMode"],
+      ["Analysis drawing", "function drawAnalysis"],
+      ["Dwell time layer", "atogDwell"],
+      ["Home/Dashboard", "function showHome"],
+      ["Home view builder", "function buildHomeView"],
+      ["SVG chart helpers", "function svgBars"],
+      ["Extraction stats", "function fetchExtractionStats"],
+      ["Hotspot labels", "function drawHotspotLabels"],
+      ["Log-scale intensity", "Math.log(n + 1)"],
+      ["Percentile floor (dwell)", "floorIdx"],
+      ["Ambient animation loop", "function startAmbient"],
+      ["Storm center estimation", "function computeStormCenter"],
+      ["Phased storm model", "STORM_PHASES"],
+    ];
+    for (const [name, sig] of features) {
+      assert(s6, appSrc.includes(sig), `${name}: present`, `${name}: MISSING (searched for '${sig}')`);
+    }
+
+    // Bug fix checks
+    assert(s6, appSrc.includes('"BotKilled"') && appSrc.includes('BotKilled:"#f44336"'), "BotKilled in timeline tick colors", "BotKilled MISSING from timeline tick colors");
+    assert(s6, appSrc.includes('"BotKilled"') && appSrc.includes('"Kill","Killed","BotKilled","BotKill"'), "BotKilled in map marker filter", "BotKilled MISSING from map marker filter");
+    assert(s6, appSrc.includes("parseFloat(tick.style.left)"), "Event tick click uses parseFloat", "Event tick click uses parseInt (precision loss)");
+    assert(s6, appSrc.includes("Math.min(W / MAP_SIZE"), "fitViewport uses Math.min (contain)", "fitViewport uses Math.max (clips map)");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 7. HTML STRUCTURE
+  // ═══════════════════════════════════════════════════════════════════════
+  const s7 = section("7. HTML Feature Presence");
+  let htmlSrc;
+  try {
+    const r = await fetch("index.html");
+    htmlSrc = await r.text();
+    emit(s7, "pass", "index.html loaded");
+  } catch (e) {
+    emit(s7, "fail", `Cannot load index.html: ${e.message}`);
+  }
+
+  if (htmlSrc) {
+    const htmlFeatures = [
+      ["Sidebar", 'id="sidebar"'],
+      ["Filter: Map", 'id="filter-map"'],
+      ["Filter: Day", 'id="filter-day"'],
+      ["Filter: Sort", 'id="filter-sort"'],
+      ["Filter: Outcome", 'id="filter-outcome"'],
+      ["Match list", 'id="match-list"'],
+      ["Canvas", 'id="map-canvas"'],
+      ["Timeline", 'id="timeline"'],
+      ["Scrubber", 'id="scrubber"'],
+      ["Topbar toggles: Paths", 'id="toggle-paths"'],
+      ["Topbar toggles: Events", 'id="toggle-events"'],
+      ["Topbar toggles: Heatmap", 'id="toggle-heatmap"'],
+      ["Topbar toggles: Bots", 'id="toggle-bots"'],
+      ["Topbar toggles: Humans", 'id="toggle-humans"'],
+      ["Topbar toggles: Storm", 'id="toggle-storm"'],
+      ["Inference toggles", 'id="toggle-infer"'],
+      ["Analysis controls", 'id="analysis-controls"'],
+      ["Analysis: Movement", 'id="atog-movement"'],
+      ["Analysis: Kills", 'id="atog-kills"'],
+      ["Analysis: Deaths", 'id="atog-deaths"'],
+      ["Analysis: Loot", 'id="atog-loot"'],
+      ["Analysis: Dwell", 'id="atog-dwell"'],
+      ["Analysis: Extraction", 'id="atog-extract"'],
+      ["Home view", 'id="home-view"'],
+      ["Player popup", 'id="player-popup"'],
+      ["Zoom controls", 'id="zoom-controls"'],
+      ["Playback speed", 'id="playback-speed"'],
+      ["Prev/Next nav", 'id="btn-prev"'],
+    ];
+    for (const [name, sig] of htmlFeatures) {
+      assert(s7, htmlSrc.includes(sig), `${name}: present`, `${name}: MISSING`);
+    }
+
+    // Tooltips on interactive elements
+    const tooltipEls = ['filter-map', 'filter-day', 'filter-sort', 'filter-outcome',
+      'toggle-paths', 'toggle-events', 'toggle-heatmap', 'toggle-bots', 'toggle-humans', 'toggle-storm',
+      'toggle-infer', 'toggle-routes', 'atog-movement', 'atog-kills', 'atog-deaths', 'atog-loot', 'atog-dwell', 'atog-extract',
+      'btn-analysis', 'scrubber', 'btn-play', 'btn-zoom-in', 'btn-zoom-out', 'btn-zoom-fit',
+      'btn-prev', 'btn-next'];
+    let missingTooltips = 0;
+    for (const id of tooltipEls) {
+      // Check if parent label or element itself has a title attribute
+      const re = new RegExp(`(id="${id}"[^>]*title=|title="[^"]*"[^>]*id="${id}"|<label[^>]*title="[^"]*"[^>]*${id})`, 's');
+      if (!re.test(htmlSrc)) missingTooltips++;
+    }
+    assert(s7, missingTooltips === 0, `All ${tooltipEls.length} interactive elements have tooltips`, `${missingTooltips} interactive elements MISSING tooltips`);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 8. CROSS-DATA CONSISTENCY
+  // ═══════════════════════════════════════════════════════════════════════
+  const s8 = section("8. Cross-Data Consistency");
+
+  // Check aggregate match counts vs index counts
+  for (const mp of ["AmbroseValley", "GrandRift", "Lockdown"]) {
+    try {
+      const agg = await fetchJSON(`data/aggregate/${mp}.json`);
+      const idxCount = index.filter(m => m.map === mp).length;
+      assert(s8, agg.matches === idxCount, `${mp}: aggregate.matches (${agg.matches}) = index count (${idxCount})`, `${mp}: aggregate.matches (${agg.matches}) ≠ index count (${idxCount})`);
+    } catch {}
+  }
+
+  // Check all match files exist
+  const fileCheckSample = index.slice(0, 30);
+  let missingFiles = 0;
+  for (const m of fileCheckSample) {
+    try {
+      const r = await fetch(`data/matches/${m.id}.json`, { method: "HEAD" });
+      if (!r.ok) missingFiles++;
+    } catch { missingFiles++; }
+  }
+  assert(s8, missingFiles === 0, `All ${fileCheckSample.length} sampled match files accessible`, `${missingFiles}/${fileCheckSample.length} match files missing`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 9. EDGE CASES & ANOMALIES
+  // ═══════════════════════════════════════════════════════════════════════
+  const s9 = section("9. Edge Cases & Data Anomalies");
+
+  // Matches with 0 humans (agent-only)
+  const noHuman = index.filter(m => m.humans === 0);
+  emit(s9, noHuman.length > 0 ? "warn" : "info", `${noHuman.length} matches with 0 human players (agent-only)`);
+
+  // Matches with 0 events
+  const noEvents = index.filter(m => m.total_events === 0);
+  assert(s9, noEvents.length === 0, "No matches with 0 events", `${noEvents.length} matches have 0 events`);
+
+  // Very short matches (< 30s)
+  const veryShort = index.filter(m => m.duration < 30);
+  emit(s9, veryShort.length > 0 ? "warn" : "info", `${veryShort.length} matches shorter than 30 seconds`);
+
+  // Suspicious matches (0 bot kills, many bot deaths)
+  const suspicious = index.filter(m => m.bot_kills === 0 && m.bot_killed > 3);
+  emit(s9, suspicious.length > 0 ? "warn" : "info", `${suspicious.length} suspicious matches (0 kills, >3 deaths to bots)`);
+
+  // Storm deaths
+  const stormDeaths = index.reduce((s, m) => s + m.storm_deaths, 0);
+  emit(s9, "info", `${stormDeaths} total storm deaths across all matches`);
+
+  // PvP kills
+  const pvpKills = index.reduce((s, m) => s + m.pvp_kills, 0);
+  emit(s9, "info", `${pvpKills} total PvP kills (extremely rare in this dataset)`);
+
+  // Outcome distribution
+  const outDist = {};
+  for (const m of index) outDist[m.outcome] = (outDist[m.outcome] || 0) + 1;
+  for (const [oc, cnt] of Object.entries(outDist)) emit(s9, "info", `Outcome '${oc}': ${cnt} matches (${(cnt/index.length*100).toFixed(1)}%)`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // SUMMARY
+  // ═══════════════════════════════════════════════════════════════════════
+  const sum = document.createElement("div");
+  sum.className = "summary";
+  const total = passCount + failCount;
+  sum.innerHTML = `<b>Results:</b> <span class="pass">${passCount} passed</span> · <span class="${failCount ? 'fail' : 'pass'}">${failCount} failed</span> · <span class="warn">${warnCount} warnings</span> · <span>${total} total checks</span>`;
+  log.appendChild(sum);
+
+  document.title = failCount > 0 ? `✗ ${failCount} FAIL — Test Suite` : `✓ ALL PASS — Test Suite`;
+}
+
+run().catch(e => {
+  const d = document.createElement("div");
+  d.className = "row fail";
+  d.textContent = `Fatal: ${e.message}`;
+  log.appendChild(d);
+});
+  </script>
+</body>
+</html>
