@@ -75,6 +75,8 @@ let lastEffectTime   = -1;
 const spawnedKeys    = new Set();
 let extractionPoint  = null;  // {t,px,py} — synthesized from last human ping when outcome=extracted
 
+let botDeathMap    = new Map();  // uid → {t, px, py} for inferred bot kills
+
 let inferenceData  = null;  // loaded per-map, cross-match bot data
 const inferenceCache = {};  // mapName → parsed JSON (session cache)
 
@@ -228,6 +230,7 @@ async function loadMatch(id) {
   mapImage = await loadImage(MAP_IMAGES[currentMatch.meta.map]);
   await loadInferenceData(currentMatch.meta.map);
   buildPlayerPositions();
+  inferBotKillTargets();
   computeStormCenter();
   detectExtractionPoint();
 
@@ -262,8 +265,8 @@ async function loadMatch(id) {
     `Events: <b>${m.total_events}</b><span class="stat-sep">|</span>` +
     `Humans: <b>${m.humans}</b>${agentTag}<span class="stat-sep">|</span>` +
     `Bots: <b>${m.bots}</b><span class="stat-sep">|</span>` +
-    `BotKills: <b>${m.bot_kills}</b><span class="stat-sep">|</span>` +
-    `Died to bots: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
+    `Player kills: <b>${currentMatch.events.filter(e => e.ev === "BotKill" && e.type === "human").length}</b><span class="stat-sep">|</span>` +
+    `Bot deaths: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
     `Loot: <b>${m.loot}</b>${pvpTag}${outcomeTag}`;
 
   scrubber.max   = m.duration;
@@ -286,6 +289,17 @@ function buildPlayerPositions() {
   }
 }
 
+// Populate botDeathMap from BotKilled events recorded in bot files.
+// BotKilled (type="bot") = a bot was killed — uid IS the dead bot, px/py IS its death position.
+// No inference needed: the bot's own file records exactly where and when it died.
+function inferBotKillTargets() {
+  botDeathMap.clear();
+  for (const ev of currentMatch.events) {
+    if (ev.ev !== "BotKilled" || ev.type !== "bot") continue;
+    botDeathMap.set(ev.uid, { t: ev.t, px: ev.px, py: ev.py });
+  }
+}
+
 function colorForType(type) {
   return type === "human" ? C.human : type === "agent" ? C.agent : C.bot;
 }
@@ -302,10 +316,10 @@ function loadImage(src) {
 // ── Event ticks ───────────────────────────────────────────────────────────────
 function buildEventMarkers() {
   const dur = currentMatch.meta.duration;
-  const col   = { Kill:"#ff9800", BotKill:"#ff9800", Killed:"#f44336",
-                  BotKilled:"#f44336", KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
-  const label = { Kill:"PvP Kill", BotKill:"Bot Kill", Killed:"Died (PvP)",
-                  BotKilled:"Killed by Bot", KilledByStorm:"Storm Death", Loot:"Loot" };
+  const col   = { Kill:"#ff9800", BotKill:"#ff9800", BotKilled:"#ff9800",
+                  Killed:"#f44336", KilledByStorm:"#ce93d8", Loot:"#66bb6a" };
+  const label = { Kill:"PvP Kill", BotKill:"Bot Kill", BotKilled:"Bot Died",
+                  Killed:"Player Died", KilledByStorm:"Storm Death", Loot:"Loot" };
   evMarkers.innerHTML = currentMatch.events
     .filter(e => col[e.ev])
     .map(e => {
@@ -704,9 +718,13 @@ function drawPaths() {
     if (type === "human" && !togHumans.checked) continue;
     if (type !== "human" && !togBots.checked)  continue;
 
+    // Cap dead bots' paths at their kill time
+    const death   = botDeathMap.get(uid);
+    const capTime = (death && currentTime > death.t) ? death.t : currentTime;
+
     const lastPing = pts[pts.length - 1].t;
-    const isActive = currentTime - lastPing <= 15;
-    const visible  = pts.filter(p => p.t <= currentTime);
+    const isActive = capTime - lastPing <= 15;
+    const visible  = pts.filter(p => p.t <= capTime);
     if (visible.length < 2) continue;
 
     const col = colorForType(type);
@@ -736,15 +754,17 @@ function drawEventMarkers() {
     if (e.type === "human" && !togHumans.checked) continue;
     if (e.type !== "human" && !togBots.checked)  continue;
     ctx.globalAlpha = 0.85;
-    // Use midpoint kill coords (kpx/kpy) when available, else killer position
-    const mx = (e.ev === "BotKill" && e.kpx != null) ? e.kpx : e.px;
-    const my = (e.ev === "BotKill" && e.kpy != null) ? e.kpy : e.py;
     switch (e.ev) {
-      case "Kill":      drawPvPKill(mx, my, R * 1.2); break;   // rare — white starburst
-      case "BotKill":   drawSkull(mx, my, R); break;            // common bot kill
-      case "Killed": case "BotKilled": drawDeathX(e.px, e.py, R, C.death); break;
-      case "KilledByStorm": drawDeathX(e.px, e.py, R, C.storm); break;
-      case "Loot":      drawLootDiamond(e.px, e.py, R * 0.85); break;
+      case "Kill":     drawPvPKill(e.px, e.py, R * 1.2); break;   // rare white starburst
+      case "BotKill":  break;  // skip — BotKilled (victim record) is the authoritative death marker
+      case "BotKilled":
+        // BotKilled is ALWAYS a bot dying (logged on the victim bot's file, type="bot").
+        // The marker appears at the bot's exact death position.
+        drawBotKillMark(e.px, e.py, R);
+        break;
+      case "Killed":          drawPlayerDeath(e.px, e.py, R); break;  // red skull — PvP death
+      case "KilledByStorm":   drawDeathX(e.px, e.py, R, C.storm); break;
+      case "Loot":            drawLootDiamond(e.px, e.py, R * 0.85); break;
     }
   }
   ctx.globalAlpha = 1;
@@ -766,16 +786,38 @@ function drawPvPKill(x, y, r) {
   ctx.closePath(); ctx.fill(); ctx.stroke();
 }
 
-function drawSkull(x, y, r) {
+// BotKill: orange upward triangle — "you scored a kill on a bot"
+function drawBotKillMark(x, y, r) {
   ctx.fillStyle   = C.kill;
+  ctx.strokeStyle = "rgba(0,0,0,0.6)";
+  ctx.lineWidth   = 0.8 / vp.scale;
+  ctx.beginPath();
+  ctx.moveTo(x,           y - r);
+  ctx.lineTo(x + r * 0.87, y + r * 0.5);
+  ctx.lineTo(x - r * 0.87, y + r * 0.5);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+}
+
+// Player death (Killed — PvP): red skull — unmistakable death marker
+function drawPlayerDeath(x, y, r) {
+  const cy = y - r * 0.05;
+  // Cranium (filled half-circle + flat jaw)
+  ctx.fillStyle   = C.death;
   ctx.strokeStyle = "rgba(0,0,0,0.7)";
   ctx.lineWidth   = 0.8 / vp.scale;
-  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-  ctx.strokeStyle = "#000";
-  ctx.lineWidth   = 1.2 / vp.scale;
-  const d = r * 0.5;
-  ctx.beginPath(); ctx.moveTo(x-d,y-d); ctx.lineTo(x+d,y+d); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x+d,y-d); ctx.lineTo(x-d,y+d); ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x, cy, r * 0.78, Math.PI, 0, false);
+  ctx.lineTo(x + r * 0.78, cy + r * 0.55);
+  ctx.lineTo(x - r * 0.78, cy + r * 0.55);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Eye sockets
+  ctx.fillStyle = "rgba(0,0,0,0.82)";
+  ctx.beginPath(); ctx.arc(x - r * 0.29, cy - r * 0.04, r * 0.21, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + r * 0.29, cy - r * 0.04, r * 0.21, 0, Math.PI * 2); ctx.fill();
+  // Nasal gap
+  ctx.beginPath(); ctx.arc(x, cy + r * 0.25, r * 0.13, 0, Math.PI * 2); ctx.fill();
 }
 
 function drawDeathX(x, y, r, color) {
@@ -811,6 +853,9 @@ function drawLiveDots() {
     if (type === "human" && !togHumans.checked) continue;
     if (type !== "human" && !togBots.checked)  continue;
     if (pts[0].t > currentTime) continue;
+
+    const death = botDeathMap.get(uid);
+    if (death && currentTime > death.t) continue;   // bot has been killed — don't render
 
     const lastPing = pts[pts.length - 1].t;
     if (currentTime - lastPing > 15) continue;   // ghost dot handles this range
@@ -866,6 +911,8 @@ function drawGhostDots() {
     const lastPing = pts[pts.length - 1].t;
     if (firstT > currentTime) continue;         // hasn't entered the match yet
     if (currentTime - lastPing <= 15) continue;  // still active — live dot handles it
+    const death = botDeathMap.get(uid);
+    if (death && currentTime > death.t) continue;  // killed bot — no ghost, marker shows it
 
     const last = pts[pts.length - 1];
     const r = (type === "bot" ? 5 : 6.5) / vp.scale;
@@ -1012,8 +1059,10 @@ function checkNewEffects() {
     const [cx, cy] = toCanvas(e.px, e.py);
     const born = performance.now();
     switch (e.ev) {
-      case "Kill": case "BotKill":     effects.push({ type:"kill",  cx, cy, born, dur:900 }); break;
-      case "Killed": case "BotKilled": effects.push({ type:"death", cx, cy, born, dur:1100 }); break;
+      case "Kill":                      effects.push({ type:"kill",  cx, cy, born, dur:900 }); break;
+      case "BotKill":                   break;  // skip — BotKilled fires the effect at the dead bot
+      case "BotKilled":                  effects.push({ type:"kill",  cx, cy, born, dur:900 }); break;
+      case "Killed":                     effects.push({ type:"death", cx, cy, born, dur:1100 }); break;
       case "KilledByStorm":            effects.push({ type:"storm_death", cx, cy, born, dur:1400 }); break;
       case "Loot":                     effects.push({ type:"loot",  cx, cy, born, dur:750 }); break;
     }
@@ -1451,7 +1500,7 @@ function buildHomeView() {
     return s;
   }
 
-  function svgStackedHBars(rows, W, H) {
+  function svgStackedHBars(rows, W) {
     const COLORS = { died:"#ef5350", survived:"#66bb6a", extracted:"#26c6da", ragequit:"#ffa726" };
     const CATS   = ["died","survived","extracted","ragequit"];
     const maxV   = Math.max(...rows.map(r => r.count));
@@ -1484,7 +1533,7 @@ function buildHomeView() {
 
   // Build chart data
   const outcomeRows  = MAPS.map(mp => ({ label: shortMap(mp), count: mapStats[mp].count, ...mapStats[mp] }));
-  const outcomeSVG   = svgStackedHBars(outcomeRows, 400, 100);
+  const outcomeSVG   = svgStackedHBars(outcomeRows, 400);
   const durationSVG  = svgBars(bins, binL, "#7e57c2", 400, 130);
   const dayCountSVG  = svgLine(dayStats.map(d => d.count),   DL, "#42a5f5", 370, 120);
   const daySurvSVG   = svgLine(dayStats.map(d => d.survPct), DL, "#66bb6a", 370, 120, "%");
@@ -1657,10 +1706,10 @@ function buildLegend() {
       <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,1 10.8,6.5 17,6.5 11.9,10 13.7,15.5 9,12 4.3,15.5 6.1,10 1,6.5 7.2,6.5" fill="${C.pvp}" stroke="#ff9800" stroke-width="0.8"/></svg></div>PvP kill (rare)
     </div>
     <div class="legend-row">
-      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.5" fill="${C.kill}"/><line x1="5.5" y1="5.5" x2="12.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/><line x1="12.5" y1="5.5" x2="5.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot kill
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,2 16,16 2,16" fill="${C.kill}" stroke="rgba(0,0,0,0.6)" stroke-width="0.8"/></svg></div><span style="color:${C.kill}">Bot killed</span> (shown at bot's position)
     </div>
     <div class="legend-row">
-      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.death}" stroke-width="0.8" opacity="0.6"/></svg></div>Death
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><path d="M9,3 A5.5,5.5 0 0,1 14.5,8.5 L13.5,12.5 L4.5,12.5 L3.5,8.5 A5.5,5.5 0 0,1 9,3 Z" fill="${C.death}" stroke="rgba(0,0,0,0.7)" stroke-width="0.8"/><circle cx="6.8" cy="8.8" r="1.5" fill="rgba(0,0,0,0.82)"/><circle cx="11.2" cy="8.8" r="1.5" fill="rgba(0,0,0,0.82)"/><circle cx="9" cy="11" r="0.95" fill="rgba(0,0,0,0.75)"/></svg></div><span style="color:${C.death}">Player died</span> (killed by bot or player)
     </div>
     <div class="legend-row">
       <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.storm}" stroke-width="0.8" opacity="0.6"/></svg></div>Storm death
