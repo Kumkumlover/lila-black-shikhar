@@ -69,10 +69,11 @@ let currentTime  = 0;
 let vp   = { scale: 1, ox: 0, oy: 0 };
 let drag = null;
 
-let playerPositions = {};  // uid → [{t,px,py,human}] sorted by t
-let effects         = [];
-let lastEffectTime  = -1;
-const spawnedKeys   = new Set();
+let playerPositions  = {};  // uid → [{t,px,py,type}] sorted by t
+let effects          = [];
+let lastEffectTime   = -1;
+const spawnedKeys    = new Set();
+let extractionPoint  = null;  // {t,px,py} — synthesized from last human ping when outcome=extracted
 
 let inferenceData  = null;  // loaded per-map, cross-match bot data
 const inferenceCache = {};  // mapName → parsed JSON (session cache)
@@ -228,6 +229,7 @@ async function loadMatch(id) {
   await loadInferenceData(currentMatch.meta.map);
   buildPlayerPositions();
   computeStormCenter();
+  detectExtractionPoint();
 
   // Auto-enable inference layer when match has bot kills but no bot telemetry
   const shouldInfer = currentMatch.meta.bots === 0 && currentMatch.meta.bot_kills > 0;
@@ -447,6 +449,22 @@ function computeStormCenter() {
   stormCenter = { ...MAP_CENTER };
 }
 
+// Detect the extraction moment for matches with outcome=extracted.
+// No Extraction event exists in the telemetry — the human's last Position ping is
+// the best proxy for when/where they stepped into the extraction zone.
+function detectExtractionPoint() {
+  extractionPoint = null;
+  if (currentMatch?.meta?.outcome !== "extracted") return;
+  let last = null;
+  for (const uid of Object.keys(playerPositions)) {
+    const pts = playerPositions[uid];
+    if (!pts?.length || pts[0].type !== "human") continue;
+    const pt = pts[pts.length - 1];
+    if (!last || pt.t > last.t) last = pt;
+  }
+  if (last) extractionPoint = { t: last.t, px: last.px, py: last.py };
+}
+
 // Phased ring radius: wait → shrink → wait → shrink pattern (matches real BR/extraction games)
 function getStormRadius(t) {
   if (!currentMatch) return STORM_PHASES[0][2];
@@ -607,6 +625,7 @@ function draw(now) {
   }
 
   drawExtractionZones();
+  drawExtractionMarker(now);
   if (togPaths.checked)  drawPaths();
   if (togEvents.checked) drawEventMarkers();
   drawGhostDots();
@@ -615,6 +634,33 @@ function draw(now) {
 
   ctx.restore();
   drawEffects(now);
+}
+
+// Persistent pulsing marker shown after the player extracts (for the rest of the match)
+function drawExtractionMarker(now) {
+  if (!extractionPoint || currentTime < extractionPoint.t) return;
+  const { px, py } = extractionPoint;
+  const pulse = Math.sin(now * 0.003) * 0.5 + 0.5;  // 0–1, ~2s period
+  ctx.save();
+  // Soft glow
+  const grad = ctx.createRadialGradient(px, py, 0, px, py, 34 + pulse * 10);
+  grad.addColorStop(0,   `rgba(0,255,180,${0.25 + pulse * 0.15})`);
+  grad.addColorStop(0.6, `rgba(0,200,130,${0.1  + pulse * 0.06})`);
+  grad.addColorStop(1,   "rgba(0,180,100,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(px, py, 44 + pulse * 10, 0, Math.PI * 2); ctx.fill();
+  // Dashed ring
+  ctx.strokeStyle = `rgba(0,230,160,${0.55 + pulse * 0.35})`;
+  ctx.lineWidth   = 1.5 / vp.scale;
+  ctx.setLineDash([4 / vp.scale, 3 / vp.scale]);
+  ctx.beginPath(); ctx.arc(px, py, 20 / vp.scale, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  // Label
+  ctx.fillStyle = `rgba(0,230,160,${0.7 + pulse * 0.3})`;
+  ctx.font      = `bold ${8 / vp.scale}px monospace`;
+  ctx.textAlign = "center";
+  ctx.fillText("EXTRACTED", px, py + 28 / vp.scale);
+  ctx.restore();
 }
 
 // ── Extraction zones ──────────────────────────────────────────────────────────
@@ -772,7 +818,7 @@ function drawLiveDots() {
     const pos = interpolatePosition(uid, currentTime);
     if (!pos) continue;
     const col = colorForType(type);
-    const r   = (type === "human" ? 5 : type === "agent" ? 4.5 : 3.5) / vp.scale;
+    const r   = (type === "human" ? 7 : type === "agent" ? 6 : 5) / vp.scale;
 
     if (type !== "bot") {
       // Human / agent: glowing dot with halo
@@ -822,7 +868,7 @@ function drawGhostDots() {
     if (currentTime - lastPing <= 15) continue;  // still active — live dot handles it
 
     const last = pts[pts.length - 1];
-    const r = (type === "bot" ? 3 : 4.5) / vp.scale;
+    const r = (type === "bot" ? 5 : 6.5) / vp.scale;
 
     // Dashed ghost circle
     ctx.save();
@@ -973,6 +1019,16 @@ function checkNewEffects() {
     }
   }
   lastEffectTime = currentTime;
+
+  // Synthesized extraction effect — fires at the moment the human's telemetry ends
+  if (extractionPoint) {
+    const key = `extract|${extractionPoint.t}`;
+    if (!spawnedKeys.has(key) && currentTime >= extractionPoint.t) {
+      spawnedKeys.add(key);
+      const [cx, cy] = toCanvas(extractionPoint.px, extractionPoint.py);
+      effects.push({ type: "extraction", cx, cy, born: performance.now(), dur: 2800 });
+    }
+  }
 }
 
 function drawEffects(now) {
@@ -1052,6 +1108,52 @@ function drawEffects(now) {
           const fl = (0.4-age)/0.4;
           ctx.fillStyle = `rgba(150,255,150,${fl*0.6})`;
           ctx.beginPath(); ctx.arc(cx, cy - age*10, 6*fl, 0, Math.PI*2); ctx.fill();
+        }
+        break;
+      }
+      case "extraction": {
+        // 1. Ground flash burst (fades in first 25% of animation)
+        if (age < 0.25) {
+          const fl  = (0.25 - age) / 0.25;
+          const grd = ctx.createRadialGradient(cx, cy, 0, cx, cy, 55 * fl);
+          grd.addColorStop(0,   `rgba(200,255,230,${fl * 0.9})`);
+          grd.addColorStop(0.4, `rgba(0,230,150,${fl * 0.6})`);
+          grd.addColorStop(1,   "rgba(0,180,100,0)");
+          ctx.fillStyle = grd;
+          ctx.beginPath(); ctx.arc(cx, cy, 55 * fl, 0, Math.PI * 2); ctx.fill();
+        }
+        // 2. Vertical beam of light
+        const bEase  = age < 0.35 ? (age / 0.35) : easeOut;
+        const bH     = 180 * bEase;
+        const bAlpha = bEase * 0.9;
+        const bGrad  = ctx.createLinearGradient(cx, cy, cx, cy - bH);
+        bGrad.addColorStop(0,    `rgba(0,255,180,${bAlpha})`);
+        bGrad.addColorStop(0.45, `rgba(80,255,200,${bAlpha * 0.55})`);
+        bGrad.addColorStop(1,    `rgba(0,255,160,0)`);
+        const bw = 16 * bEase;
+        ctx.fillStyle = bGrad;
+        ctx.fillRect(cx - bw / 2, cy - bH, bw, bH);
+        // Bright core line
+        ctx.strokeStyle = `rgba(230,255,245,${bAlpha * 0.9})`;
+        ctx.lineWidth   = 2.5 * bEase;
+        ctx.lineCap     = "round";
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, cy - bH); ctx.stroke();
+        // 3. Expanding concentric rings
+        for (let i = 0; i < 3; i++) {
+          const rAge  = Math.max(0, age - i * 0.1);
+          const rFade = Math.max(0, 1 - rAge * 1.5);
+          if (rFade <= 0) continue;
+          ctx.strokeStyle = `rgba(0,230,160,${rFade * 0.8})`;
+          ctx.lineWidth   = 3 * rFade;
+          ctx.beginPath(); ctx.arc(cx, cy, rAge * 90, 0, Math.PI * 2); ctx.stroke();
+        }
+        // 4. Rising particles
+        for (let i = 0; i < 12; i++) {
+          const pOff = ((i / 12) + age * 1.4) % 1;
+          const pX   = cx + Math.sin(i * 2.1 + age * 10) * (16 - pOff * 12);
+          const pY   = cy - pOff * 170;
+          ctx.fillStyle = `rgba(180,255,220,${(1 - pOff) * bAlpha})`;
+          ctx.beginPath(); ctx.arc(pX, pY, 3 * (1 - pOff * 0.5), 0, Math.PI * 2); ctx.fill();
         }
         break;
       }
@@ -1522,20 +1624,69 @@ function buildLegend() {
   leg.id = "legend";
   leg.innerHTML = `
     <h4>Legend</h4>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.human}" stroke-width="2.5" stroke-linecap="round"/></svg></div>Human path</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.agent}" stroke-width="2" stroke-linecap="round" stroke-dasharray="4,2"/></svg></div>Test agent path</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.bot}" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot path</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="5" fill="white" stroke="${C.human}" stroke-width="1.5"/><circle cx="9" cy="9" r="8" fill="none" stroke="${C.human}" stroke-width="0.8" opacity="0.4"/></svg></div>Player position</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,1 10.8,6.5 17,6.5 11.9,10 13.7,15.5 9,12 4.3,15.5 6.1,10 1,6.5 7.2,6.5" fill="${C.pvp}" stroke="#ff9800" stroke-width="0.8"/></svg></div>PvP kill (rare)</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.5" fill="${C.kill}"/><line x1="5.5" y1="5.5" x2="12.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/><line x1="12.5" y1="5.5" x2="5.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot kill</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.death}" stroke-width="0.8" opacity="0.6"/></svg></div>Death</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.storm}" stroke-width="0.8" opacity="0.6"/></svg></div>Storm death</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,2 16,9 9,16 2,9" fill="${C.loot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/><polygon points="9,4 13,9 9,10" fill="rgba(255,255,255,0.4)"/></svg></div>Loot</div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(80,0,120,0.5)" stroke="rgba(200,100,255,0.9)" stroke-width="1.5" stroke-dasharray="3,2"/></svg></div>Storm zone</div>
-    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(76,175,80,0.25)" stroke="rgba(102,187,106,0.7)" stroke-width="1" stroke-dasharray="3,2"/></svg></div><span style="color:#66bb6a">Extract zone</span></div>
-    <div class="legend-row" style="margin-top:2px;padding-top:4px;border-top:1px solid #252530"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(30,80,180,0.35)" stroke="rgba(100,180,255,0.5)" stroke-width="1"/></svg></div><span style="color:#ffd54f">~ Bot density</span></div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="rgba(255,213,79,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/></svg></div><span style="color:#ffd54f">~ Patrol routes</span></div>
-    <div class="legend-row"><div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="none" stroke="rgba(255,213,79,0.6)" stroke-width="1" stroke-dasharray="3,3"/><circle cx="9" cy="9" r="1.5" fill="rgba(255,213,79,0.7)"/></svg></div><span style="color:#ffd54f">~ Kill range</span></div>
+
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
+        <circle cx="9" cy="9" r="7.5" fill="rgba(79,195,247,0.18)" stroke="${C.human}" stroke-width="0.7" opacity="0.5"/>
+        <circle cx="9" cy="9" r="5" fill="white" stroke="${C.human}" stroke-width="1.5"/>
+      </svg></div>Human player
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
+        <circle cx="9" cy="9" r="5" fill="${C.bot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8" opacity="0.8"/>
+      </svg></div>Bot
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
+        <circle cx="9" cy="9" r="5" fill="${C.agent}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/>
+        <polygon points="9,4.5 13.5,9 9,13.5 4.5,9" fill="none" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/>
+      </svg></div><span style="color:${C.agent}">Test agent</span>
+    </div>
+
+    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530">
+      <div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.human}" stroke-width="2.5" stroke-linecap="round"/></svg></div>Human path
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.agent}" stroke-width="2" stroke-linecap="round" stroke-dasharray="4,2"/></svg></div>Agent path
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="${C.bot}" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot path
+    </div>
+
+    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,1 10.8,6.5 17,6.5 11.9,10 13.7,15.5 9,12 4.3,15.5 6.1,10 1,6.5 7.2,6.5" fill="${C.pvp}" stroke="#ff9800" stroke-width="0.8"/></svg></div>PvP kill (rare)
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="4.5" fill="${C.kill}"/><line x1="5.5" y1="5.5" x2="12.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/><line x1="12.5" y1="5.5" x2="5.5" y2="12.5" stroke="#000" stroke-width="1.5" stroke-linecap="round"/></svg></div>Bot kill
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.death}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.death}" stroke-width="0.8" opacity="0.6"/></svg></div>Death
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><line x1="3" y1="3" x2="15" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><line x1="15" y1="3" x2="3" y2="15" stroke="${C.storm}" stroke-width="2" stroke-linecap="round"/><circle cx="9" cy="9" r="7" fill="none" stroke="${C.storm}" stroke-width="0.8" opacity="0.6"/></svg></div>Storm death
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><polygon points="9,2 16,9 9,16 2,9" fill="${C.loot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/><polygon points="9,4 13,9 9,10" fill="rgba(255,255,255,0.4)"/></svg></div>Loot
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(80,0,120,0.5)" stroke="rgba(200,100,255,0.9)" stroke-width="1.5" stroke-dasharray="3,2"/></svg></div>Storm zone
+    </div>
+
+    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(76,175,80,0.25)" stroke="rgba(102,187,106,0.7)" stroke-width="1" stroke-dasharray="3,2"/></svg></div><span style="color:#66bb6a">Extract zone</span>
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="rgba(0,255,180,0.15)" stroke="rgba(0,230,160,0.8)" stroke-width="1" stroke-dasharray="3,2"/><text x="9" y="12" text-anchor="middle" font-size="6" fill="rgba(0,230,160,0.9)" font-family="monospace" font-weight="bold">EX</text></svg></div><span style="color:#00e6a0">Extracted (player)</span>
+    </div>
+    <div class="legend-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #252530">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="8" fill="rgba(30,80,180,0.35)" stroke="rgba(100,180,255,0.5)" stroke-width="1"/></svg></div><span style="color:#ffd54f">~ Bot density</span>
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke="rgba(255,213,79,0.5)" stroke-width="1.5" stroke-dasharray="4,3"/></svg></div><span style="color:#ffd54f">~ Patrol routes</span>
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18"><circle cx="9" cy="9" r="7" fill="none" stroke="rgba(255,213,79,0.6)" stroke-width="1" stroke-dasharray="3,3"/><circle cx="9" cy="9" r="1.5" fill="rgba(255,213,79,0.7)"/></svg></div><span style="color:#ffd54f">~ Kill range</span>
+    </div>
   `;
   wrap.appendChild(leg);
 }
