@@ -23,6 +23,7 @@ const STORM_PHASES = [
 const C = {
   human:  "#4fc3f7", humanDim: "rgba(79,195,247,0.35)",
   bot:    "#ef5350", botDim:   "rgba(239,83,80,0.25)",
+  squad:  "#26c6da",                                     // teal — AI squad companion bot
   agent:  "#ffd54f",                                     // amber — test agent
   kill:   "#ff9800", loot: "#66bb6a", storm: "#ce93d8", death: "#f44336",
   pvp:    "#ffffff",                                     // white — rare PvP kill
@@ -264,7 +265,7 @@ async function loadMatch(id) {
     `Duration: <b>${fmtTime(m.duration)}</b><span class="stat-sep">|</span>` +
     `Events: <b>${m.total_events}</b><span class="stat-sep">|</span>` +
     `Humans: <b>${m.humans}</b>${agentTag}<span class="stat-sep">|</span>` +
-    `Bots: <b>${m.bots}</b><span class="stat-sep">|</span>` +
+    `Bots: <b>${m.bots - (m.squad || 0)}</b>${m.squad ? ` <span style="color:${C.squad}">+${m.squad} squad</span>` : ""}<span class="stat-sep">|</span>` +
     `Player kills: <b>${currentMatch.events.filter(e => e.ev === "BotKill" && e.type === "human").length}</b><span class="stat-sep">|</span>` +
     `Bot deaths: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
     `Loot: <b>${m.loot}</b>${pvpTag}${outcomeTag}`;
@@ -294,6 +295,7 @@ function buildPlayerPositions() {
 // No inference needed: the bot's own file records exactly where and when it died.
 function inferBotKillTargets() {
   botDeathMap.clear();
+  // BotKilled on bot files = enemy bot died. Squad bots never get BotKilled events.
   for (const ev of currentMatch.events) {
     if (ev.ev !== "BotKilled" || ev.type !== "bot") continue;
     botDeathMap.set(ev.uid, { t: ev.t, px: ev.px, py: ev.py });
@@ -301,7 +303,10 @@ function inferBotKillTargets() {
 }
 
 function colorForType(type) {
-  return type === "human" ? C.human : type === "agent" ? C.agent : C.bot;
+  if (type === "human") return C.human;
+  if (type === "agent") return C.agent;
+  if (type === "squad") return C.squad;
+  return C.bot;
 }
 
 function loadImage(src) {
@@ -730,14 +735,18 @@ function drawPaths() {
     const col = colorForType(type);
     ctx.beginPath();
     ctx.strokeStyle = col;
-    ctx.lineWidth   = type === "human" ? (1.8 / vp.scale) : type === "agent" ? (1.4 / vp.scale) : (0.9 / vp.scale);
-    ctx.globalAlpha = type === "human" ? 0.85 : type === "agent" ? 0.7 : 0.35;
+    ctx.lineWidth   = type === "human" ? (1.8 / vp.scale) : type === "agent" ? (1.4 / vp.scale)
+                    : type === "squad" ? (1.2 / vp.scale) : (0.9 / vp.scale);
+    ctx.globalAlpha = type === "human" ? 0.85 : type === "agent" ? 0.7
+                    : type === "squad" ? 0.6 : 0.35;
+    ctx.setLineDash(type === "squad" ? [6 / vp.scale, 4 / vp.scale] : []);
     ctx.lineJoin    = "round";
     ctx.lineCap     = "round";
     if (!isActive) ctx.globalAlpha *= 0.35;   // dim trail after disconnect
     ctx.moveTo(visible[0].px, visible[0].py);
     for (let i = 1; i < visible.length; i++) ctx.lineTo(visible[i].px, visible[i].py);
     ctx.stroke();
+    ctx.setLineDash([]);
     ctx.globalAlpha = 1;
   }
 }
@@ -863,9 +872,33 @@ function drawLiveDots() {
     const pos = interpolatePosition(uid, currentTime);
     if (!pos) continue;
     const col = colorForType(type);
-    const r   = (type === "human" ? 7 : type === "agent" ? 6 : 5) / vp.scale;
+    const r = (type === "human" ? 7 : type === "agent" ? 6 : 5) / vp.scale;
 
-    if (type !== "bot") {
+    if (type === "bot") {
+      // Enemy bot: solid red dot
+      ctx.fillStyle   = C.bot;
+      ctx.globalAlpha = 0.7;
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth   = 0.8 / vp.scale;
+      ctx.beginPath(); ctx.arc(pos.px, pos.py, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (type === "squad") {
+      // Squad companion bot: teal dot with shield outline (friendly marker)
+      ctx.fillStyle   = C.squad;
+      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = "rgba(0,0,0,0.5)";
+      ctx.lineWidth   = 0.8 / vp.scale;
+      ctx.beginPath(); ctx.arc(pos.px, pos.py, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      // Small shield chevron on top to mark as friendly
+      ctx.strokeStyle = "rgba(255,255,255,0.8)";
+      ctx.lineWidth   = 0.9 / vp.scale;
+      ctx.beginPath();
+      ctx.moveTo(pos.px - r * 0.45, pos.py - r * 0.15);
+      ctx.lineTo(pos.px,            pos.py - r * 0.6);
+      ctx.lineTo(pos.px + r * 0.45, pos.py - r * 0.15);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else {
       // Human / agent: glowing dot with halo
       const [cr, cg, cb] = type === "human" ? [79,195,247] : [255,213,79];
       const grad = ctx.createRadialGradient(pos.px, pos.py, r, pos.px, pos.py, r * 3.5);
@@ -877,7 +910,7 @@ function drawLiveDots() {
       ctx.strokeStyle = col;
       ctx.lineWidth   = 1.5 / vp.scale;
       ctx.beginPath(); ctx.arc(pos.px, pos.py, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      // Agent: draw a small diamond overlay to distinguish from human
+      // Agent: small diamond overlay
       if (type === "agent") {
         ctx.strokeStyle = "rgba(0,0,0,0.6)";
         ctx.lineWidth   = 0.6 / vp.scale;
@@ -887,13 +920,6 @@ function drawLiveDots() {
         ctx.lineTo(pos.px, pos.py + d); ctx.lineTo(pos.px - d, pos.py);
         ctx.closePath(); ctx.stroke();
       }
-    } else {
-      ctx.fillStyle   = C.bot;
-      ctx.globalAlpha = 0.7;
-      ctx.strokeStyle = "rgba(0,0,0,0.5)";
-      ctx.lineWidth   = 0.8 / vp.scale;
-      ctx.beginPath(); ctx.arc(pos.px, pos.py, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.globalAlpha = 1;
     }
   }
 }
@@ -915,7 +941,7 @@ function drawGhostDots() {
     if (death && currentTime > death.t) continue;  // killed bot — no ghost, marker shows it
 
     const last = pts[pts.length - 1];
-    const r = (type === "bot" ? 5 : 6.5) / vp.scale;
+    const r = (type === "bot" ? 5 : type === "squad" ? 5 : 6.5) / vp.scale;
 
     // Dashed ghost circle
     ctx.save();
@@ -1683,7 +1709,13 @@ function buildLegend() {
     <div class="legend-row">
       <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
         <circle cx="9" cy="9" r="5" fill="${C.bot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8" opacity="0.8"/>
-      </svg></div>Bot
+      </svg></div>Enemy bot
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
+        <circle cx="9" cy="9" r="5" fill="${C.squad}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/>
+        <polyline points="6.8,9.2 9,6.5 11.2,9.2" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg></div><span style="color:${C.squad}">Squad bot</span> (AI companion)
     </div>
     <div class="legend-row">
       <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
