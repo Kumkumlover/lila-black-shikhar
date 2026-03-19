@@ -59,7 +59,8 @@ let filteredMatches = [];   // kept in sync with renderMatchList for prev/next n
 let currentMatchId  = null;
 let currentMatch    = null;
 let mapImage     = null;
-let playing      = false;
+let playing        = false;
+let userScrubbing  = false;   // true while user has pointer down on the scrubber
 let rafId        = null;
 let ambientRafId = null;   // low-fps loop for storm/glow animation when paused
 let lastRafTs    = null;
@@ -313,7 +314,7 @@ function buildEventMarkers() {
 
   // Tooltip on hover
   evMarkers.querySelectorAll(".ev-tick").forEach(tick => {
-    tick.addEventListener("mouseenter", e => {
+    tick.addEventListener("mouseenter", () => {
       evTooltip.textContent = tick.dataset.tip;
       evTooltip.classList.remove("hidden");
     });
@@ -1064,13 +1065,18 @@ function drawEffects(now) {
 // ── Playback ──────────────────────────────────────────────────────────────────
 btnPlay.addEventListener("click", () => playing ? stopPlayback() : startPlayback());
 
+scrubber.addEventListener("pointerdown", () => { userScrubbing = true; });
+window.addEventListener("pointerup",    () => { userScrubbing = false; });
+
 scrubber.addEventListener("input", () => {
-  if (playing) return;     // ignore input events triggered by rafLoop's programmatic scrubber.value set
-  currentTime = parseInt(scrubber.value);
+  // Ignore programmatic updates from rafLoop (scrubber.valueAsNumber = ...)
+  // but allow user drags even while playing.
+  if (playing && !userScrubbing) return;
+  currentTime = parseFloat(scrubber.value);
   lastEffectTime = currentTime;
   spawnedKeys.clear();
   updateTimeLabel(currentTime);
-  draw();
+  if (!playing) draw();
 });
 
 function startPlayback() {
@@ -1373,8 +1379,6 @@ function buildHomeView() {
   function kpi(val, lbl, note = "", tip = "") {
     return `<div class="kpi-card"${tip ? ` title="${tip}"` : ""}><div class="kpi-val">${val}</div><div class="kpi-lbl">${lbl}</div>${note ? `<div class="kpi-note">${note}</div>` : ""}</div>`;
   }
-
-  function rateColor(r) { return r > 40 ? "#66bb6a" : r > 20 ? "#ffa726" : "#ef5350"; }
 
   // Build chart data
   const outcomeRows  = MAPS.map(mp => ({ label: shortMap(mp), count: mapStats[mp].count, ...mapStats[mp] }));
