@@ -246,6 +246,10 @@ async function loadMatch(id) {
   computeStormCenter();
   detectExtractionPoint();
 
+  // Storm toggle: default OFF when the estimated ring is demonstrably wrong
+  // (human survives well outside the safe zone with no storm deaths).
+  togStorm.checked = isStormReliable();
+
   // Auto-enable inference layer when match has bot kills but no bot telemetry
   const shouldInfer = currentMatch.meta.bots === 0 && currentMatch.meta.bot_kills > 0;
   togInfer.checked = shouldInfer;
@@ -487,6 +491,34 @@ function computeStormCenter() {
     return;
   }
   stormCenter = { ...MAP_CENTER };
+}
+
+// Returns true when the storm ring estimate is trustworthy enough to show by default.
+// Heuristic: if the human player's late-game positions are consistently OUTSIDE
+// the estimated safe zone yet no storm deaths occurred, the ring center is wrong.
+// Storm deaths are ground truth — if any exist, the estimate is good enough.
+function isStormReliable() {
+  if ((currentMatch.meta.storm_deaths || 0) > 0) return true;
+
+  const dur     = currentMatch.meta.duration;
+  const humanUid = Object.keys(playerPositions).find(
+    uid => playerPositions[uid][0]?.type === "human"
+  );
+  if (!humanUid) return false;
+
+  const pts      = playerPositions[humanUid];
+  const latePts  = pts.filter(p => p.t >= dur * 0.70);
+  if (latePts.length < 3) return false;
+
+  // Storm radius at 85% of match (well into late game)
+  const stormR = getStormRadius(dur * 0.85);
+
+  const outsideCount = latePts.filter(p =>
+    Math.hypot(p.px - stormCenter.x, p.py - stormCenter.y) > stormR
+  ).length;
+
+  // If >40% of late pings are outside the estimated safe zone, the estimate is off
+  return (outsideCount / latePts.length) < 0.4;
 }
 
 // Detect the extraction moment for matches with outcome=extracted.
@@ -786,7 +818,15 @@ function drawEventMarkers() {
     ctx.globalAlpha = 0.85;
     switch (e.ev) {
       case "Kill":     drawPvPKill(e.px, e.py, R * 1.2); break;   // rare white starburst
-      case "BotKill":  break;  // skip — BotKilled (victim record) is the authoritative death marker
+      case "BotKill":
+        // When bot telemetry files exist, skip here — BotKilled (victim record) is authoritative.
+        // When no bot telemetry (bots === 0), there are no BotKilled events, so draw the marker
+        // here instead, using inferred victim position (kpx/kpy) if available, else killer's position.
+        if (currentMatch.meta.bots === 0) {
+          const mx = e.kpx ?? e.px, my = e.kpy ?? e.py;
+          if (mx != null) drawBotKillMark(mx, my, R);
+        }
+        break;
       case "BotKilled":
         // BotKilled is ALWAYS a bot dying (logged on the victim bot's file, type="bot").
         // The marker appears at the bot's exact death position.
