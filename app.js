@@ -265,7 +265,7 @@ async function loadMatch(id) {
     `Duration: <b>${fmtTime(m.duration)}</b><span class="stat-sep">|</span>` +
     `Events: <b>${m.total_events}</b><span class="stat-sep">|</span>` +
     `Humans: <b>${m.humans}</b>${agentTag}<span class="stat-sep">|</span>` +
-    `Bots: <b>${m.bots - (m.squad || 0)}</b>${m.squad ? ` <span style="color:${C.squad}">+${m.squad} squad</span>` : ""}<span class="stat-sep">|</span>` +
+    `Bots: <b>${m.bots - (m.squad || 0) - ((m.bot_squads||[]).reduce((s,g)=>s+g[1],0))}</b>${m.squad ? ` <span style="color:${C.squad}">+${m.squad} companion</span>` : ""}${(m.bot_squads||[]).map(([id,n])=>`<span style="color:#ef9a9a;margin-left:4px">Sq${id}:${n}</span>`).join("")}<span class="stat-sep">|</span>` +
     `Player kills: <b>${currentMatch.events.filter(e => e.ev === "BotKill" && e.type === "human").length}</b><span class="stat-sep">|</span>` +
     `Bot deaths: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
     `Loot: <b>${m.loot}</b>${pvpTag}${outcomeTag}`;
@@ -286,7 +286,7 @@ function buildPlayerPositions() {
     if (e.ev !== "Position" && e.ev !== "BotPosition") continue;
     if (e.px == null) continue;
     if (!playerPositions[e.uid]) playerPositions[e.uid] = [];
-    playerPositions[e.uid].push({ t: e.t, px: e.px, py: e.py, type: e.type });
+    playerPositions[e.uid].push({ t: e.t, px: e.px, py: e.py, type: e.type, sq: e.sq ?? null });
   }
 }
 
@@ -875,13 +875,30 @@ function drawLiveDots() {
     const r = (type === "human" ? 7 : type === "agent" ? 6 : 5) / vp.scale;
 
     if (type === "bot") {
-      // Enemy bot: solid red dot
+      // Enemy bot: solid red dot; bot squad members also get a numbered badge
       ctx.fillStyle   = C.bot;
       ctx.globalAlpha = 0.7;
       ctx.strokeStyle = "rgba(0,0,0,0.5)";
       ctx.lineWidth   = 0.8 / vp.scale;
       ctx.beginPath(); ctx.arc(pos.px, pos.py, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
       ctx.globalAlpha = 1;
+      const sqNum = pts[0].sq;
+      if (sqNum != null) {
+        // Small white badge at top-right of dot with squad number.
+        // All sizes in minimap-pixel space (divided by vp.scale → fixed screen-pixel size).
+        const br = 4   / vp.scale;   // badge radius: 4 screen px
+        const bx = pos.px + 6 / vp.scale;
+        const by = pos.py - 6 / vp.scale;
+        ctx.globalAlpha  = 0.95;
+        ctx.fillStyle    = "#fff";
+        ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle        = "#b71c1c";
+        ctx.font             = `bold ${7 / vp.scale}px sans-serif`;
+        ctx.textAlign        = "center";
+        ctx.textBaseline     = "middle";
+        ctx.fillText(String(sqNum), bx, by);
+        ctx.globalAlpha = 1;
+      }
     } else if (type === "squad") {
       // Squad companion bot: teal dot with shield outline (friendly marker)
       ctx.fillStyle   = C.squad;
@@ -1715,7 +1732,14 @@ function buildLegend() {
       <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
         <circle cx="9" cy="9" r="5" fill="${C.squad}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8"/>
         <polyline points="6.8,9.2 9,6.5 11.2,9.2" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg></div><span style="color:${C.squad}">Squad bot</span> (AI companion)
+      </svg></div><span style="color:${C.squad}">Companion bot</span> (spawned with player)
+    </div>
+    <div class="legend-row">
+      <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
+        <circle cx="9" cy="9" r="5" fill="${C.bot}" stroke="rgba(0,0,0,0.5)" stroke-width="0.8" opacity="0.8"/>
+        <circle cx="13.5" cy="4.5" r="3.5" fill="#fff" stroke="none"/>
+        <text x="13.5" y="5.1" text-anchor="middle" dominant-baseline="middle" font-size="4.5" font-weight="bold" fill="#b71c1c">1</text>
+      </svg></div><span style="color:#ef9a9a">Bot squad</span> (numbered badge per squad)
     </div>
     <div class="legend-row">
       <div class="l-icon"><svg width="18" height="18" viewBox="0 0 18 18">
