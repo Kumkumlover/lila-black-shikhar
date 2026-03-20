@@ -102,10 +102,11 @@ match_meta["match_id_clean"] = match_meta["match_id"].str.replace(r"\.nakama-0$"
 
 ---
 
-## Entity Classification (3-Way)
+## Entity Classification (4-Way)
 
-The dataset contains three distinct entity types. The README states UUID = human,
-numeric = bot, but reverse-mapping by event type reveals a third category.
+The dataset contains four distinct entity types in the final output. The README states
+UUID = human, numeric = bot, but two further subcategories emerge from event analysis
+and spawn-pattern detection.
 
 ### Classification Logic
 
@@ -122,15 +123,25 @@ def entity_type(uid, is_human):
     if str(uid) in TEST_AGENT_IDS:
         return "agent"
     return "human" if is_human else "bot"
+
+# Step 3: per-match squad detection (see Squad Detection section below)
+# bots that spawn near the human and are not killed → type reclassified to "squad"
+# bots that spawn in pure-bot clusters → keep type "bot", gain sq=N field
 ```
 
 ### Entity Type Reference
 
-| Type | ID Format | Events | Evidence |
-|---|---|---|---|
-| `human` | UUID (e.g. `e7ac0138-...`) | Position, Loot, BotKill, BotKilled, Kill, Killed, KilledByStorm | Standard player telemetry |
-| `bot` | Numeric (e.g. `1432`) | BotPosition, BotKill, BotKilled | Pure patrol/combat AI |
-| `agent` | Numeric (`1379`, `1402`, `1429`) | Position, Loot, BotKill | Scripted test tool — numeric ID but emits human-type events; disconnects before match ends; follows loot routes; appears across multiple days as a persistent entity |
+| Type | ID Format | Events | Rendering | Evidence |
+|---|---|---|---|---|
+| `human` | UUID (e.g. `e7ac0138-...`) | Position, Loot, BotKill, BotKilled, Kill, Killed, KilledByStorm | Blue glowing dot | Standard player telemetry |
+| `bot` | Numeric (e.g. `1432`) | BotPosition, BotKill, BotKilled | Red solid dot | Pure patrol/combat AI |
+| `squad` | Numeric | BotPosition, BotKill, BotKilled | Teal dot with chevron | Bot that spawned within 80px of the human and was not killed — AI companion |
+| `agent` | Numeric (`1379`, `1402`, `1429`) | Position, Loot, BotKill | Amber dot | Scripted test tool — numeric ID but emits human-type events; disconnects before match ends; follows loot routes |
+
+**Bot squads (`sq` field):** Bots in pure-bot spawn clusters (size ≥ 2) keep
+`type: "bot"` but gain a `sq: N` integer field (N = 1, 2, 3...). They are rendered
+as red dots with a white numbered badge to distinguish which squad they belong to.
+See Squad Detection for details.
 
 **Why the README classification is incomplete:** Bots `1379`, `1402`, `1429` emit
 `Position` and `Loot` events, which are behaviourally human-type actions. A naive
@@ -138,6 +149,62 @@ UUID/numeric split would classify them as bots and miss their loot-route behavio
 entirely. Event-based reverse-mapping surfaces the anomaly; cross-referencing with
 early-disconnect patterns and repeated appearance across 5 days confirms they are
 internal test agents, not player-controlled bots.
+
+---
+
+## Squad Detection
+
+### Algorithm (Spawn-Proximity Model)
+
+Squads are groups of entities that **spawn together at match start**. The key insight
+is that squadmates always appear near each other in the first seconds of a match;
+this is a more reliable signal than sustained proximity (which produces false positives
+for aggressive bots that converge on the player mid-match).
+
+```python
+SPAWN_WINDOW_SEC    = 60   # entity's first recorded event must be within 60s of match start
+SQUAD_SPAWN_DIST_PX = 80   # max minimap-pixel distance between squadmates at spawn
+SQUAD_MIN_SIZE      = 2    # minimum members to qualify as a squad
+
+# Step 1: find spawn position = first recorded (Position|BotPosition) event per entity
+# Step 2: keep only entities whose first event falls within SPAWN_WINDOW_SEC
+# Step 3: union-find clustering — pair any two candidates within SQUAD_SPAWN_DIST_PX
+# Step 4: keep clusters with >= SQUAD_MIN_SIZE members
+# Step 5: validate (human+bot clusters only)
+#   - bots that the human killed (BotKilled events for their UID) are excluded
+#   - remaining bots are companions, not enemies
+# Step 6: label
+#   - companion cluster → type = "squad" (existing teal rendering)
+#   - pure-bot clusters → type = "bot", sq = 1/2/3... (numbered by descending size)
+```
+
+### Validation Rules
+
+| Cluster type | Kill check | Rationale |
+|---|---|---|
+| Human + bots | Yes — remove bots that have a `BotKilled` event | If the human killed the bot, it was an enemy regardless of spawn proximity |
+| Pure bot squads | None | Bots do not kill each other by game design — spawn proximity alone is sufficient |
+
+### Dataset Results (785 matches, Feb 10–14 2026)
+
+| Metric | Value |
+|---|---|
+| Matches with companion bots (type=`squad`) | 7 |
+| Matches with enemy bot squads (sq≥1) | 18 |
+| Bot squad size (all observed) | Exclusively 2–4, mostly trios (3) |
+| Max squads in one match | 5 (AmbroseValley) |
+
+Of the ~52 matches that have any bot telemetry files, 18 (35%) show detectable squad
+patterns — suggesting bot squad mechanics are common but invisible in the 93% of
+matches where bot telemetry was not exported.
+
+### Limitation
+
+Spawn-proximity is a heuristic. Two enemy bots that happen to have their first recorded
+ping near the same spawn cluster may be incorrectly grouped as a squad. The 80px
+threshold (~70–90 world units) was chosen to be tight enough to avoid this, but the
+first recorded position may be up to 30 seconds of movement away from the true spawn
+point if the bot was active before its first GPS ping.
 
 ---
 
@@ -216,7 +283,7 @@ init()
 loadMatch(id)
   └── fetch data/matches/{id}.json   → currentMatch
       ├── hideHome()                  → switch from dashboard to canvas
-      ├── buildPlayerPositions()      → playerPositions{uid: [{t,px,py,type}]}
+      ├── buildPlayerPositions()      → playerPositions{uid: [{t,px,py,type,sq}]}
       ├── loadInferenceData(map)      → cross-match bot data (cached per map)
       ├── computeStormCenter()        → estimated safe-zone center from late-game positions
       ├── buildEventMarkers()         → scrubber tick marks
@@ -240,6 +307,10 @@ draw(now)                              — Match playback mode
   ├── drawEventMarkers()               — kill/death/loot icons at event positions
   ├── drawGhostDots()                  — dashed ring at last known position (inactive players)
   ├── drawLiveDots()                   — interpolated current position per active player
+  │     • human: blue glowing dot with halo
+  │     • bot: red solid dot; if sq≠null, white numbered badge at top-right
+  │     • squad (companion): teal dot with shield chevron
+  │     • agent: amber dot with diamond overlay
   ├── drawStorm(now)                   — animated phased storm ring with lightning
   └── drawEffects(now)                 — particle FX spawned at event moments
 
@@ -347,12 +418,19 @@ Array of match metadata objects for the browser sidebar:
   "bots": 14,
   "bot_kills": 6,
   "bot_killed": 11,
+  "squad": 1,
+  "bot_squads": [[1, 3], [2, 3], [3, 3], [4, 3]],
   "loot": 25,
   "pvp_kills": 0,
   "storm_deaths": 0,
   "outcome": "died"
 }
 ```
+
+| Field | Type | Description |
+|---|---|---|
+| `squad` | int | Number of companion bots (`type="squad"`) — bots that spawned near the human |
+| `bot_squads` | `[[id, size], ...]` | Enemy bot squads: each entry is `[squad_id, member_count]`. Empty array when no squads detected. |
 
 `outcome` values: `"died"` (killed by bot/player/storm), `"survived"` (telemetry ends
 without death, last position near extraction zone), `"extracted"` (inferred successful
@@ -364,15 +442,21 @@ Full event array for one match, loaded on demand:
 {
   "meta": { ...same as index entry... },
   "events": [
-    { "uid": "10648aa3-...", "type": "human", "ev": "Position", "t": 0, "px": 157.6, "py": 372.4 },
-    { "uid": "1405",         "type": "bot",   "ev": "BotKill",  "t": 73, "px": 520.1, "py": 388.2,
-      "kpx": 498.3, "kpy": 401.1 }
+    { "uid": "10648aa3-...", "type": "human",  "ev": "Position",    "t": 0,  "px": 157.6, "py": 372.4 },
+    { "uid": "1388",         "type": "squad",  "ev": "BotPosition", "t": 2,  "px": 163.1, "py": 370.8 },
+    { "uid": "1405",         "type": "bot",    "ev": "BotKill",     "t": 73, "px": 520.1, "py": 388.2,
+      "kpx": 498.3, "kpy": 401.1 },
+    { "uid": "1392",         "type": "bot",    "ev": "BotPosition", "t": 5,  "px": 620.4, "py": 280.1,
+      "sq": 2 }
   ]
 }
 ```
 
-`kpx`/`kpy` — victim's last known pixel position, present only on `BotKill` events
-where a victim bot could be matched within 50 world units.
+| Field | Present on | Description |
+|---|---|---|
+| `type` | All events | `"human"` \| `"bot"` \| `"squad"` \| `"agent"` |
+| `kpx` / `kpy` | `BotKill` events only | Victim's last known pixel position; absent if no bot could be matched within 50 world units |
+| `sq` | Bot squad members only | Integer squad ID (1, 2, 3...) for bots that are part of a named enemy squad. Absent for lone bots and companion bots (which use `type="squad"` instead) |
 
 ### `data/aggregate/{map}.json`
 Cross-match aggregate heatmaps generated offline by `generate_aggregate.py`:
@@ -436,6 +520,8 @@ rewrites so direct URL navigation works correctly.
 | 8 | Dwell time includes movement dwell | A player walking through a cell accumulates dwell even if not lingering; mitigated by 60th-percentile floor in rendering |
 | 9 | Extraction zone locations are inferred | No server data for zone positions — derived from clustering last-known positions of surviving players |
 | 10 | Outcome classification is heuristic | "extracted" vs "survived" vs "ragequit" are inferred from telemetry patterns, not server events |
+| 11 | Squad detection is heuristic and limited to 7% of matches | Bot telemetry is absent in 93% of matches, making spawn-position clustering impossible; squads are undetectable in those matches |
+| 12 | Squad spawn proximity may produce false positives | Two enemy bots that happen to have their first ping near the same location may be incorrectly grouped as a squad; mitigated by 80px threshold |
 
 ---
 
