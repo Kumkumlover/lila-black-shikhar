@@ -169,21 +169,32 @@ function renderMatchList() {
     const dur = fmtTime(m.duration);
     const day = m.day.replace("February_", "Feb ");
     // Suspicious: died to bots >> bot kills (ratio > 2.5)
-    const suspicious = m.bot_kills === 0 && m.bot_killed > 3;
-    const hasAgent   = m.agents > 0;
-    const agentBadge = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
+    const suspicious    = m.bot_kills === 0 && m.bot_killed > 3;
+    const hasAgent      = m.agents > 0;
+    const agentBadge    = hasAgent ? ` <span style="color:${C.agent};font-size:9px">&#9888;</span>` : "";
+    const bsSq          = m.bot_squads || [];
+    const botSquadTotal = bsSq.reduce((s, g) => s + g[1], 0);
+    const loneBots      = m.bots - (m.squad || 0) - botSquadTotal;
+    const sqBadge       = bsSq.length > 0
+      ? ` <span style="color:#ef9a9a;font-size:9px;font-weight:700;letter-spacing:0.3px">Sq×${bsSq.length}</span>` : "";
+    const cmpBadge      = m.squad > 0
+      ? ` <span style="color:${C.squad};font-size:9px;font-weight:700">cmp</span>` : "";
     const OUTCOME_LABEL = { extracted:"Extracted", survived:"Survived", died:"Died", ragequit:"Rage-quit?", unknown:"" };
     const oc      = m.outcome || "unknown";
     const ocBadge = oc !== "unknown"
       ? ` <span class="outcome-badge outcome-${oc}">${OUTCOME_LABEL[oc]}</span>` : "";
+    // Compact bot count: lone + companion superscript + squad badges
+    const botMeta = loneBots > 0 || (!m.squad && !bsSq.length)
+      ? `B:<b>${loneBots}</b>${m.squad ? `<span style="color:${C.squad}">+${m.squad}c</span>` : ""}${bsSq.map(([id,n])=>`<span style="color:#ef9a9a">+${n}s${id}</span>`).join("")}`
+      : `B:${m.squad ? `<span style="color:${C.squad}">${m.squad}c</span>` : ""}${bsSq.map(([id,n])=>`<span style="color:#ef9a9a">${n}s${id}</span>`).join(" ")}`;
     return `<li data-id="${m.id}" ${suspicious ? 'style="border-left-color:#ff9800"' : ''}>
       <div class="match-title">
         <span class="match-map-tag tag-${m.map}">${shortMap(m.map)}</span>
-        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}
+        ${m.id.slice(0, 8)}${suspicious ? ' <span style="color:#ff9800;font-size:9px">&#9888;</span>' : ""}${agentBadge}${sqBadge}${cmpBadge}
         ${ocBadge}
       </div>
       <div class="match-meta">
-        ${day} · ${dur} · <b>${m.total_events}</b> ev · H:<b>${m.humans}</b>${m.agents > 0 ? ` A:<b style="color:${C.agent}">${m.agents}</b>` : ""} B:<b>${m.bots}</b>
+        ${day} · ${dur} · <b>${m.total_events}</b> ev · H:<b>${m.humans}</b>${m.agents > 0 ? ` A:<b style="color:${C.agent}">${m.agents}</b>` : ""} ${botMeta}
       </div>
     </li>`;
   }).join("");
@@ -265,7 +276,17 @@ async function loadMatch(id) {
     `Duration: <b>${fmtTime(m.duration)}</b><span class="stat-sep">|</span>` +
     `Events: <b>${m.total_events}</b><span class="stat-sep">|</span>` +
     `Humans: <b>${m.humans}</b>${agentTag}<span class="stat-sep">|</span>` +
-    `Bots: <b>${m.bots - (m.squad || 0) - ((m.bot_squads||[]).reduce((s,g)=>s+g[1],0))}</b>${m.squad ? ` <span style="color:${C.squad}">+${m.squad} companion</span>` : ""}${(m.bot_squads||[]).map(([id,n])=>`<span style="color:#ef9a9a;margin-left:4px">Sq${id}:${n}</span>`).join("")}<span class="stat-sep">|</span>` +
+    (() => {
+      const bsSq2      = m.bot_squads || [];
+      const bsTotal    = bsSq2.reduce((s,g)=>s+g[1],0);
+      const loneB      = m.bots - (m.squad||0) - bsTotal;
+      const parts      = [];
+      if (loneB > 0)  parts.push(`<b>${loneB}</b> lone`);
+      if (m.squad)    parts.push(`<span style="color:${C.squad}">${m.squad} companion</span>`);
+      bsSq2.forEach(([id,n]) => parts.push(`<span style="color:#ef9a9a">Sq${id}:${n}</span>`));
+      const breakdown  = parts.length ? ` (${parts.join(" · ")})` : "";
+      return `Bots: <b>${m.bots}</b>${breakdown}<span class="stat-sep">|</span>`;
+    })() +
     `Player kills: <b>${currentMatch.events.filter(e => e.ev === "BotKill" && e.type === "human").length}</b><span class="stat-sep">|</span>` +
     `Bot deaths: <b>${m.bot_killed}</b><span class="stat-sep">|</span>` +
     `Loot: <b>${m.loot}</b>${pvpTag}${outcomeTag}`;
@@ -1022,7 +1043,12 @@ function showPlayerPopup(uid, sx, sy) {
   const lastPing = pts[pts.length - 1].t;
   const isActive = currentTime - lastPing <= 15;
   const shortId  = String(uid).length > 20 ? String(uid).slice(0, 13) + "…" : uid;
-  const label    = type === "human" ? "&#128100; Human" : type === "agent" ? "&#9888; Test Agent" : "&#129302; Bot";
+  const sq       = pts[0].sq;
+  const label    = type === "human"  ? "&#128100; Human"
+    : type === "agent"  ? "&#9888; Test Agent"
+    : type === "squad"  ? "&#129302; Companion Bot"
+    : sq != null ? `&#129302; Bot <span style="background:#fff;color:#b71c1c;font-size:9px;font-weight:800;padding:1px 4px;border-radius:3px;vertical-align:middle">Sq${sq}</span>`
+    : "&#129302; Bot";
 
   playerPopup.innerHTML = `
     <div class="popup-header ${type}">
