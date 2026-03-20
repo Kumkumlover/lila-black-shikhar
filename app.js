@@ -1579,7 +1579,7 @@ function buildHomeView() {
     const ah  = H - GP.t - GP.b;
     const bw  = aw / vals.length * 0.62;
     const gap = aw / vals.length;
-    let s = `<svg width="${W}" height="${H}" style="display:block;overflow:visible">`;
+    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">`;
     vals.forEach((v, i) => {
       const bh = (v / max) * ah;
       const x  = GP.l + i * gap + (gap - bw) / 2;
@@ -1602,7 +1602,7 @@ function buildHomeView() {
       const y = GP.t + ah * (1 - v / max);
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     }).join(" ");
-    let s = `<svg width="${W}" height="${H}" style="display:block;overflow:visible">`;
+    let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;overflow:visible">`;
     s += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>`;
     vals.forEach((v, i) => {
       const x = GP.l + i * step;
@@ -1623,7 +1623,8 @@ function buildHomeView() {
     const avail  = W - labelW - 36;
     const rh     = 26;
     const gap    = 10;
-    let s = `<svg width="${W}" height="${rows.length * (rh + gap) - gap + 4}" style="display:block">`;
+    const svgH = rows.length * (rh + gap) - gap + 4;
+    let s = `<svg viewBox="0 0 ${W} ${svgH}" width="100%" style="display:block">`;
     rows.forEach((row, i) => {
       const y = i * (rh + gap);
       s += `<rect x="${labelW}" y="${y}" width="${avail}" height="${rh}" fill="rgba(255,255,255,0.03)" rx="3"/>`;
