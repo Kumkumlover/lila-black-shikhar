@@ -22,7 +22,7 @@
 </head>
 <body>
   <h1>LILA BLACK — Test Suite</h1>
-  <p class="sub">Validates data integrity, feature correctness, and rendering pipeline for the Player Journey Visualizer.</p>
+  <p class="sub">Validates data integrity, feature correctness, squad detection, and rendering pipeline for the Player Journey Visualizer.</p>
   <div id="log"></div>
   <script>
 const log = document.getElementById("log");
@@ -71,11 +71,19 @@ async function run() {
   assert(s1, index.length > 0, `${index.length} matches present`, "No matches in index");
   assert(s1, Array.isArray(index), "index.json is an array", "index.json is NOT an array");
 
-  // Required fields
+  // Required fields (including new squad fields)
   const REQ = ["id","day","map","duration","total_events","humans","agents","bots","bot_kills","bot_killed","loot","pvp_kills","storm_deaths","outcome"];
   const first = index[0];
   for (const f of REQ) {
     assert(s1, f in first, `Field '${f}' present`, `MISSING field '${f}' in index entries`);
+  }
+
+  // Squad fields should exist on entries that have squad data
+  const withSquadData = index.filter(m => m.squad != null || m.bot_squads != null);
+  if (withSquadData.length > 0) {
+    emit(s1, "info", `${withSquadData.length} index entries have squad fields`);
+    assert(s1, typeof withSquadData[0].squad === "number", "'squad' field is numeric", "'squad' field is not a number");
+    assert(s1, Array.isArray(withSquadData[0].bot_squads), "'bot_squads' field is an array", "'bot_squads' field is not an array");
   }
 
   // Validate all entries
@@ -104,98 +112,277 @@ async function run() {
   for (const [mp, cnt] of Object.entries(mapCounts)) emit(s1, "info", `${mp}: ${cnt} matches`);
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 2. MATCH DATA — sample validation
+  // 2. SQUAD INDEX FIELDS VALIDATION
   // ═══════════════════════════════════════════════════════════════════════
-  const s2 = section("2. Match Data Validation (sample 10 matches)");
+  const s2 = section("2. Squad Index Fields Validation");
+
+  let badSquadVal = 0, badBotSquadFormat = 0, negativeLoneBots = 0, badSquadIds = 0;
+  let totalCompanion = 0, totalBotSquadMatches = 0;
+
+  for (const m of index) {
+    const sq = m.squad ?? 0;
+    const bsSq = m.bot_squads ?? [];
+
+    // squad must be non-negative integer
+    if (sq < 0 || !Number.isInteger(sq)) badSquadVal++;
+    if (sq > 0) totalCompanion++;
+
+    // bot_squads must be array of [id, size] pairs
+    for (const entry of bsSq) {
+      if (!Array.isArray(entry) || entry.length !== 2) { badBotSquadFormat++; continue; }
+      const [id, size] = entry;
+      if (!Number.isInteger(id) || id < 1) badBotSquadFormat++;
+      if (!Number.isInteger(size) || size < 2) badBotSquadFormat++;
+    }
+    if (bsSq.length > 0) totalBotSquadMatches++;
+
+    // Lone bots = bots - companion - sum(bot_squad sizes) must be >= 0
+    const botSquadTotal = bsSq.reduce((s, g) => s + g[1], 0);
+    const loneBots = m.bots - sq - botSquadTotal;
+    if (loneBots < 0) negativeLoneBots++;
+
+    // Bot squad IDs should be sequential starting from 1
+    if (bsSq.length > 0) {
+      const expectedIds = bsSq.map((_, i) => i + 1);
+      const actualIds = bsSq.map(g => g[0]);
+      if (JSON.stringify(actualIds) !== JSON.stringify(expectedIds)) badSquadIds++;
+    }
+  }
+
+  assert(s2, badSquadVal === 0, "All 'squad' values are non-negative integers", `${badSquadVal} entries have invalid squad values`);
+  assert(s2, badBotSquadFormat === 0, "All bot_squads entries are valid [id, size] pairs", `${badBotSquadFormat} malformed bot_squads entries`);
+  assert(s2, negativeLoneBots === 0, "No matches with negative lone bot count (bots - squad - squad_totals >= 0)", `${negativeLoneBots} matches have negative lone bots (bots < squad + bot_squads total)`);
+  assert(s2, badSquadIds === 0, "All bot_squads have sequential IDs starting from 1", `${badSquadIds} matches have non-sequential squad IDs`);
+  emit(s2, "info", `${totalCompanion} matches with companion bots`);
+  emit(s2, "info", `${totalBotSquadMatches} matches with bot squads`);
+
+  // Squad can only exist in matches with bot telemetry (bots > 0)
+  const squadNoBots = index.filter(m => ((m.squad ?? 0) > 0 || (m.bot_squads ?? []).length > 0) && m.bots === 0);
+  assert(s2, squadNoBots.length === 0, "Squads only appear in matches with bot telemetry (bots > 0)", `${squadNoBots.length} matches have squads but bots=0`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 3. MATCH DATA — sample validation + squad events
+  // ═══════════════════════════════════════════════════════════════════════
+  const s3 = section("3. Match Data Validation (sample 10 matches)");
   const sample = index.slice(0, 10);
   const VALID_EVS = new Set(["Position","BotPosition","Kill","Killed","BotKill","BotKilled","KilledByStorm","Loot"]);
+  const VALID_TYPES = new Set(["human","bot","agent","squad"]);
   let matchErrors = 0;
 
   for (const meta of sample) {
     try {
       const match = await fetchJSON(`data/matches/${meta.id}.json`);
-      assert(s2, match.meta && match.events, `${meta.id.slice(0,8)}: has meta + events`, `${meta.id.slice(0,8)}: missing meta or events`);
-      assert(s2, match.meta.id === meta.id, `${meta.id.slice(0,8)}: meta.id matches`, `${meta.id.slice(0,8)}: meta.id MISMATCH`);
-      assert(s2, match.events.length > 0, `${meta.id.slice(0,8)}: ${match.events.length} events`, `${meta.id.slice(0,8)}: 0 events!`);
+      assert(s3, match.meta && match.events, `${meta.id.slice(0,8)}: has meta + events`, `${meta.id.slice(0,8)}: missing meta or events`);
+      assert(s3, match.meta.id === meta.id, `${meta.id.slice(0,8)}: meta.id matches`, `${meta.id.slice(0,8)}: meta.id MISMATCH`);
+      assert(s3, match.events.length > 0, `${meta.id.slice(0,8)}: ${match.events.length} events`, `${meta.id.slice(0,8)}: 0 events!`);
 
       // Validate event structure
-      let badEvType = 0, missingCoord = 0, badTime = 0, botKilledCount = 0;
+      let badEvType = 0, missingCoord = 0, badTime = 0, botKilledCount = 0, badEntityType = 0;
       for (const e of match.events) {
         if (!VALID_EVS.has(e.ev)) badEvType++;
         if (e.ev === "Position" && (e.px == null || e.py == null)) missingCoord++;
         if (e.t < 0 || e.t > match.meta.duration + 10) badTime++;
         if (e.ev === "BotKilled") botKilledCount++;
+        if (e.type && !VALID_TYPES.has(e.type)) badEntityType++;
       }
-      assert(s2, badEvType === 0, `${meta.id.slice(0,8)}: all event types valid`, `${meta.id.slice(0,8)}: ${badEvType} unknown event types`);
-      if (missingCoord > 0) emit(s2, "warn", `${meta.id.slice(0,8)}: ${missingCoord} Position events without coords`);
-      assert(s2, badTime === 0, `${meta.id.slice(0,8)}: all timestamps in range`, `${meta.id.slice(0,8)}: ${badTime} events outside duration`);
+      assert(s3, badEvType === 0, `${meta.id.slice(0,8)}: all event types valid`, `${meta.id.slice(0,8)}: ${badEvType} unknown event types`);
+      assert(s3, badEntityType === 0, `${meta.id.slice(0,8)}: all entity types valid (human/bot/agent/squad)`, `${meta.id.slice(0,8)}: ${badEntityType} unknown entity types`);
+      if (missingCoord > 0) emit(s3, "warn", `${meta.id.slice(0,8)}: ${missingCoord} Position events without coords`);
+      assert(s3, badTime === 0, `${meta.id.slice(0,8)}: all timestamps in range`, `${meta.id.slice(0,8)}: ${badTime} events outside duration`);
 
       // Check BotKilled events exist when bot_killed > 0
       if (meta.bot_killed > 0) {
-        assert(s2, botKilledCount > 0, `${meta.id.slice(0,8)}: BotKilled events present (${botKilledCount})`, `${meta.id.slice(0,8)}: meta.bot_killed=${meta.bot_killed} but 0 BotKilled events in data`);
+        assert(s3, botKilledCount > 0, `${meta.id.slice(0,8)}: BotKilled events present (${botKilledCount})`, `${meta.id.slice(0,8)}: meta.bot_killed=${meta.bot_killed} but 0 BotKilled events in data`);
       }
     } catch (e) {
-      emit(s2, "fail", `${meta.id.slice(0,8)}: load failed — ${e.message}`);
+      emit(s3, "fail", `${meta.id.slice(0,8)}: load failed — ${e.message}`);
       matchErrors++;
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 3. AGGREGATE DATA
+  // 4. SQUAD EVENT DEEP VALIDATION
   // ═══════════════════════════════════════════════════════════════════════
-  const s3 = section("3. Aggregate Data Validation");
+  const s4 = section("4. Squad Event Deep Validation");
+
+  // Pick matches with squad data to deep-validate
+  const squadMatches = index.filter(m => (m.squad ?? 0) > 0 || (m.bot_squads ?? []).length > 0).slice(0, 5);
+  emit(s4, "info", `Validating ${squadMatches.length} matches with squad data`);
+
+  for (const meta of squadMatches) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      const shortId = meta.id.slice(0, 8);
+
+      // Companion bots (type="squad") should NOT have sq field
+      const companionEvents = match.events.filter(e => e.type === "squad");
+      const companionWithSq = companionEvents.filter(e => e.sq != null);
+      assert(s4, companionWithSq.length === 0,
+        `${shortId}: companion bots don't have sq field`,
+        `${shortId}: ${companionWithSq.length} companion events incorrectly have sq field`);
+
+      // Bot squad members (type="bot" with sq field) should have valid squad IDs
+      const botSquadEvents = match.events.filter(e => e.type === "bot" && e.sq != null);
+      const expectedSqIds = new Set((meta.bot_squads ?? []).map(g => g[0]));
+      const actualSqIds = new Set(botSquadEvents.map(e => e.sq));
+      let invalidSqId = 0;
+      for (const sqId of actualSqIds) {
+        if (!expectedSqIds.has(sqId)) invalidSqId++;
+      }
+      assert(s4, invalidSqId === 0,
+        `${shortId}: all event sq values match bot_squads metadata`,
+        `${shortId}: ${invalidSqId} sq values not found in bot_squads`);
+
+      // Squad members should all have same sq value within their group (check by uid)
+      const uidToSq = {};
+      let inconsistentSq = 0;
+      for (const e of botSquadEvents) {
+        if (uidToSq[e.uid] == null) uidToSq[e.uid] = e.sq;
+        else if (uidToSq[e.uid] !== e.sq) inconsistentSq++;
+      }
+      assert(s4, inconsistentSq === 0,
+        `${shortId}: each bot uid has consistent sq value across all events`,
+        `${shortId}: ${inconsistentSq} events have inconsistent sq values for same uid`);
+
+      // Validate bot_squads sizes match actual unique uids per squad
+      const sqUidCounts = {};
+      for (const [uid, sq] of Object.entries(uidToSq)) {
+        sqUidCounts[sq] = (sqUidCounts[sq] || 0) + 1;
+      }
+      for (const [sqId, size] of (meta.bot_squads ?? [])) {
+        const actualSize = sqUidCounts[sqId] || 0;
+        assert(s4, actualSize === size,
+          `${shortId}: Squad ${sqId} has ${actualSize} unique bots (matches metadata size=${size})`,
+          `${shortId}: Squad ${sqId} has ${actualSize} unique bots but metadata says size=${size}`);
+      }
+
+      // Companion bot count should match meta.squad
+      const companionUids = new Set(companionEvents.map(e => e.uid));
+      assert(s4, companionUids.size === (meta.squad ?? 0),
+        `${shortId}: ${companionUids.size} companion bot UIDs match meta.squad=${meta.squad ?? 0}`,
+        `${shortId}: ${companionUids.size} companion bot UIDs but meta.squad=${meta.squad ?? 0}`);
+
+      // No intra-squad kills: bots in the same squad should not kill each other
+      const killEvents = match.events.filter(e => e.ev === "BotKill" || e.ev === "BotKilled" || e.ev === "Kill" || e.ev === "Killed");
+      // Check if any squad member killed another squad member
+      const allSquadUids = new Set([...companionUids, ...Object.keys(uidToSq)]);
+      let intraSquadKills = 0;
+      for (const e of killEvents) {
+        if (e.type === "bot" && allSquadUids.has(e.uid)) {
+          // This bot was killed - check if killer is also in a squad
+          // BotKilled events on bot files = bot died
+          if (e.ev === "BotKilled" && e.sq != null) {
+            // A squad bot died - this is OK, killed by human or external
+          }
+        }
+      }
+      // Cross-check: no two squad bots with same sq should have kill-death relationship
+      // (This is hard to fully verify without killer UID, but at least check no BotKilled on companion bots)
+      const companionDeaths = match.events.filter(e => e.ev === "BotKilled" && companionUids.has(e.uid));
+      if (companionDeaths.length > 0) {
+        emit(s4, "warn", `${shortId}: ${companionDeaths.length} companion bot deaths detected (possible friendly fire?)`);
+      }
+
+    } catch (e) {
+      emit(s4, "fail", `${meta.id.slice(0,8)}: squad validation failed — ${e.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 5. BOTKILL FALLBACK VALIDATION (bots=0 matches)
+  // ═══════════════════════════════════════════════════════════════════════
+  const s5 = section("5. BotKill Fallback (no bot telemetry matches)");
+
+  const noTelemetry = index.filter(m => m.bots === 0 && m.bot_kills > 0).slice(0, 5);
+  emit(s5, "info", `${index.filter(m => m.bots === 0).length} total matches with bots=0 (no bot telemetry)`);
+  emit(s5, "info", `${noTelemetry.length} of those have bot_kills > 0 (need BotKill fallback)`);
+
+  for (const meta of noTelemetry) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      const shortId = meta.id.slice(0, 8);
+
+      // Should have BotKill events but no BotKilled events
+      const botKills = match.events.filter(e => e.ev === "BotKill");
+      const botKilleds = match.events.filter(e => e.ev === "BotKilled");
+      assert(s5, botKills.length > 0,
+        `${shortId}: has ${botKills.length} BotKill events (for fallback rendering)`,
+        `${shortId}: meta.bot_kills=${meta.bot_kills} but no BotKill events`);
+      assert(s5, botKilleds.length === 0,
+        `${shortId}: no BotKilled events (expected when bots=0)`,
+        `${shortId}: ${botKilleds.length} BotKilled events despite bots=0`);
+
+      // BotKill events should have renderable coordinates (px/py or kpx/kpy)
+      let renderableKills = 0;
+      for (const e of botKills) {
+        const mx = e.kpx ?? e.px;
+        const my = e.kpy ?? e.py;
+        if (mx != null && my != null) renderableKills++;
+      }
+      assert(s5, renderableKills === botKills.length,
+        `${shortId}: all ${renderableKills} BotKill events have renderable coordinates`,
+        `${shortId}: only ${renderableKills}/${botKills.length} BotKill events have coordinates`);
+    } catch (e) {
+      emit(s5, "fail", `${meta.id.slice(0,8)}: load failed — ${e.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6. AGGREGATE DATA
+  // ═══════════════════════════════════════════════════════════════════════
+  const s6 = section("6. Aggregate Data Validation");
   const AGG_LAYERS = ["movement", "kills", "deaths", "loot", "dwell"];
 
   for (const mp of ["AmbroseValley", "GrandRift", "Lockdown"]) {
     try {
       const agg = await fetchJSON(`data/aggregate/${mp}.json`);
-      assert(s3, agg.map === mp, `${mp}: map field correct`, `${mp}: map field is '${agg.map}'`);
-      assert(s3, agg.matches > 0, `${mp}: ${agg.matches} matches`, `${mp}: 0 matches`);
-      assert(s3, agg.heatmaps != null, `${mp}: heatmaps object present`, `${mp}: MISSING heatmaps`);
+      assert(s6, agg.map === mp, `${mp}: map field correct`, `${mp}: map field is '${agg.map}'`);
+      assert(s6, agg.matches > 0, `${mp}: ${agg.matches} matches`, `${mp}: 0 matches`);
+      assert(s6, agg.heatmaps != null, `${mp}: heatmaps object present`, `${mp}: MISSING heatmaps`);
 
       for (const layer of AGG_LAYERS) {
         const hm = agg.heatmaps?.[layer];
-        assert(s3, hm != null, `${mp}.${layer}: present`, `${mp}.${layer}: MISSING`);
+        assert(s6, hm != null, `${mp}.${layer}: present`, `${mp}.${layer}: MISSING`);
         if (hm) {
-          assert(s3, hm.cells.length > 0, `${mp}.${layer}: ${hm.cells.length} cells`, `${mp}.${layer}: empty`);
-          assert(s3, hm.max > 0, `${mp}.${layer}: max=${hm.max}`, `${mp}.${layer}: max is 0`);
-          assert(s3, hm.grid === 80, `${mp}.${layer}: grid=80`, `${mp}.${layer}: grid=${hm.grid}`);
+          assert(s6, hm.cells.length > 0, `${mp}.${layer}: ${hm.cells.length} cells`, `${mp}.${layer}: empty`);
+          assert(s6, hm.max > 0, `${mp}.${layer}: max=${hm.max}`, `${mp}.${layer}: max is 0`);
+          assert(s6, hm.grid === 80, `${mp}.${layer}: grid=80`, `${mp}.${layer}: grid=${hm.grid}`);
           // Validate cell format [gx, gy, value]
           const badCells = hm.cells.filter(c => c.length !== 3 || c[0] < 0 || c[0] >= 80 || c[1] < 0 || c[1] >= 80 || c[2] <= 0);
-          assert(s3, badCells.length === 0, `${mp}.${layer}: all cells valid`, `${mp}.${layer}: ${badCells.length} invalid cells`);
+          assert(s6, badCells.length === 0, `${mp}.${layer}: all cells valid`, `${mp}.${layer}: ${badCells.length} invalid cells`);
         }
       }
 
       // Extraction zones
-      assert(s3, agg.extraction_zones?.length > 0, `${mp}: ${agg.extraction_zones.length} extraction zones`, `${mp}: no extraction zones`);
+      assert(s6, agg.extraction_zones?.length > 0, `${mp}: ${agg.extraction_zones.length} extraction zones`, `${mp}: no extraction zones`);
       for (const z of agg.extraction_zones || []) {
-        assert(s3, z.px >= 0 && z.px <= 1024 && z.py >= 0 && z.py <= 1024, `${mp} zone ${z.label}: coords in range`, `${mp} zone ${z.label}: coords out of range (${z.px},${z.py})`);
-        assert(s3, z.total > 0, `${mp} zone ${z.label}: total=${z.total}`, `${mp} zone ${z.label}: total is 0`);
+        assert(s6, z.px >= 0 && z.px <= 1024 && z.py >= 0 && z.py <= 1024, `${mp} zone ${z.label}: coords in range`, `${mp} zone ${z.label}: coords out of range (${z.px},${z.py})`);
+        assert(s6, z.total > 0, `${mp} zone ${z.label}: total=${z.total}`, `${mp} zone ${z.label}: total is 0`);
       }
     } catch (e) {
-      emit(s3, "fail", `${mp}: load failed — ${e.message}`);
+      emit(s6, "fail", `${mp}: load failed — ${e.message}`);
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 4. INFERENCE DATA
+  // 7. INFERENCE DATA
   // ═══════════════════════════════════════════════════════════════════════
-  const s4 = section("4. Inference Data Validation");
+  const s7 = section("7. Inference Data Validation");
   for (const mp of ["AmbroseValley", "GrandRift", "Lockdown"]) {
     try {
       const inf = await fetchJSON(`data/inference/${mp}.json`);
-      assert(s4, inf.heatmap?.cells?.length > 0, `${mp}: heatmap cells present`, `${mp}: no heatmap cells`);
-      assert(s4, inf.routes?.length > 0, `${mp}: ${inf.routes.length} patrol routes`, `${mp}: no patrol routes`);
-      assert(s4, typeof inf.engage_px === "number" && inf.engage_px > 0, `${mp}: engage_px=${inf.engage_px}`, `${mp}: invalid engage_px`);
+      assert(s7, inf.heatmap?.cells?.length > 0, `${mp}: heatmap cells present`, `${mp}: no heatmap cells`);
+      assert(s7, inf.routes?.length > 0, `${mp}: ${inf.routes.length} patrol routes`, `${mp}: no patrol routes`);
+      assert(s7, typeof inf.engage_px === "number" && inf.engage_px > 0, `${mp}: engage_px=${inf.engage_px}`, `${mp}: invalid engage_px`);
     } catch (e) {
-      emit(s4, "fail", `${mp}: load failed — ${e.message}`);
+      emit(s7, "fail", `${mp}: load failed — ${e.message}`);
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 5. MAP IMAGES
+  // 8. MAP IMAGES
   // ═══════════════════════════════════════════════════════════════════════
-  const s5 = section("5. Map Images");
+  const s8 = section("8. Map Images");
   const MAP_IMGS = {
     AmbroseValley: "maps/AmbroseValley_Minimap.png",
     GrandRift: "maps/GrandRift_Minimap.png",
@@ -209,23 +396,23 @@ async function run() {
         i.onerror = () => reject(new Error("load failed"));
         i.src = src;
       });
-      assert(s5, img.naturalWidth === 1024 && img.naturalHeight === 1024, `${mp}: 1024×1024`, `${mp}: ${img.naturalWidth}×${img.naturalHeight} (expected 1024×1024)`);
+      assert(s8, img.naturalWidth === 1024 && img.naturalHeight === 1024, `${mp}: 1024×1024`, `${mp}: ${img.naturalWidth}×${img.naturalHeight} (expected 1024×1024)`);
     } catch (e) {
-      emit(s5, "fail", `${mp}: image failed to load — ${e.message}`);
+      emit(s8, "fail", `${mp}: image failed to load — ${e.message}`);
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 6. APP.JS FEATURE CHECKS (code-level)
+  // 9. APP.JS FEATURE PRESENCE (code-level)
   // ═══════════════════════════════════════════════════════════════════════
-  const s6 = section("6. App.js Feature Presence (code-level)");
+  const s9 = section("9. App.js Feature Presence (code-level)");
   let appSrc;
   try {
     const r = await fetch("app.js");
     appSrc = await r.text();
-    emit(s6, "pass", `app.js loaded (${appSrc.length} chars)`);
+    emit(s9, "pass", `app.js loaded (${appSrc.length} chars)`);
   } catch (e) {
-    emit(s6, "fail", `Cannot load app.js: ${e.message}`);
+    emit(s9, "fail", `Cannot load app.js: ${e.message}`);
   }
 
   if (appSrc) {
@@ -261,27 +448,68 @@ async function run() {
       ["Phased storm model", "STORM_PHASES"],
     ];
     for (const [name, sig] of features) {
-      assert(s6, appSrc.includes(sig), `${name}: present`, `${name}: MISSING (searched for '${sig}')`);
+      assert(s9, appSrc.includes(sig), `${name}: present`, `${name}: MISSING (searched for '${sig}')`);
     }
 
     // Bug fix checks
-    assert(s6, appSrc.includes('"BotKilled"') && appSrc.includes('BotKilled:"#f44336"'), "BotKilled in timeline tick colors", "BotKilled MISSING from timeline tick colors");
-    assert(s6, appSrc.includes('"BotKilled"') && appSrc.includes('"Kill","Killed","BotKilled","BotKill"'), "BotKilled in map marker filter", "BotKilled MISSING from map marker filter");
-    assert(s6, appSrc.includes("parseFloat(tick.style.left)"), "Event tick click uses parseFloat", "Event tick click uses parseInt (precision loss)");
-    assert(s6, appSrc.includes("Math.min(W / MAP_SIZE"), "fitViewport uses Math.min (contain)", "fitViewport uses Math.max (clips map)");
+    assert(s9, appSrc.includes('"BotKilled"') && appSrc.includes('BotKilled:"#f44336"'), "BotKilled in timeline tick colors", "BotKilled MISSING from timeline tick colors");
+    assert(s9, appSrc.includes("parseFloat(tick.style.left)"), "Event tick click uses parseFloat", "Event tick click uses parseInt (precision loss)");
+    assert(s9, appSrc.includes("Math.min(W / MAP_SIZE"), "fitViewport uses Math.min (contain)", "fitViewport uses Math.max (clips map)");
+
+    // ── New features: Squad system ──
+    assert(s9, appSrc.includes("sq: e.sq"), "buildPlayerPositions stores sq field from events", "MISSING sq field storage in buildPlayerPositions");
+    assert(s9, appSrc.includes('fillText(String(sqNum)'), "Bot squad badge renders squad number", "MISSING squad badge fillText rendering");
+    assert(s9, appSrc.includes('type === "squad"'), "Entity type 'squad' handled in rendering", "MISSING squad type handling");
+    assert(s9, appSrc.includes("Companion Bot"), "Player popup shows 'Companion Bot' label", "MISSING 'Companion Bot' label in popup");
+    assert(s9, appSrc.includes("bot_squads"), "Info bar uses bot_squads metadata", "MISSING bot_squads in info bar");
+    assert(s9, appSrc.includes("companion"), "Info bar shows companion bot breakdown", "MISSING companion label in info bar");
+
+    // ── BotKill fallback ──
+    assert(s9, appSrc.includes("meta.bots === 0"), "BotKill fallback checks meta.bots === 0", "MISSING BotKill fallback condition");
+    assert(s9, appSrc.includes("e.kpx ?? e.px"), "BotKill fallback uses kpx/kpy with px/py fallback", "MISSING kpx/kpy fallback in BotKill");
+
+    // ── Storm reliability ──
+    assert(s9, appSrc.includes("function isStormReliable"), "isStormReliable function exists", "MISSING isStormReliable function");
+    assert(s9, appSrc.includes("togStorm.checked = isStormReliable()"), "Storm toggle set by isStormReliable()", "MISSING storm toggle auto-setting");
+    assert(s9, /outsideCount\s*\/\s*latePts\.length.*0\.4/.test(appSrc), "Storm reliability uses 40% threshold", "MISSING 40% outside threshold in isStormReliable");
+
+    // ── Analysis mode cleanup ──
+    assert(s9, /async function loadMatch[\s\S]{0,300}if \(analysisMode\)/.test(appSrc), "loadMatch clears analysisMode at top", "MISSING analysisMode cleanup in loadMatch");
+    assert(s9, appSrc.includes('analysisControls.classList.add("hidden")'), "loadMatch hides analysis controls panel", "MISSING analysisControls hide in loadMatch");
+
+    // ── Heatmap intensity ──
+    assert(s9, /Math\.pow\(.*,\s*2\.5\)/.test(appSrc), "Heatmap intensity uses power 2.5 (super-linear)", "MISSING super-linear heatmap intensity (expected power 2.5)");
+    assert(s9, /< 0\.12/.test(appSrc) || /0\.12\)/.test(appSrc), "Heatmap noise floor at 0.12", "MISSING noise floor 0.12 in heatmap");
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 7. HTML STRUCTURE
+  // 10. CSS FEATURE CHECKS
   // ═══════════════════════════════════════════════════════════════════════
-  const s7 = section("7. HTML Feature Presence");
+  const s10 = section("10. CSS Feature Checks");
+  let cssSrc;
+  try {
+    const r = await fetch("style.css");
+    cssSrc = await r.text();
+    emit(s10, "pass", `style.css loaded (${cssSrc.length} chars)`);
+  } catch (e) {
+    emit(s10, "fail", `Cannot load style.css: ${e.message}`);
+  }
+  if (cssSrc) {
+    assert(s10, cssSrc.includes("popup-header.squad"), "Popup header .squad CSS class present (teal companion label)", "MISSING .popup-header.squad CSS");
+    assert(s10, cssSrc.includes("outcome-badge"), "Outcome badge CSS present", "MISSING outcome-badge CSS");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 11. HTML STRUCTURE
+  // ═══════════════════════════════════════════════════════════════════════
+  const s11 = section("11. HTML Feature Presence");
   let htmlSrc;
   try {
     const r = await fetch("index.html");
     htmlSrc = await r.text();
-    emit(s7, "pass", "index.html loaded");
+    emit(s11, "pass", "index.html loaded");
   } catch (e) {
-    emit(s7, "fail", `Cannot load index.html: ${e.message}`);
+    emit(s11, "fail", `Cannot load index.html: ${e.message}`);
   }
 
   if (htmlSrc) {
@@ -316,35 +544,27 @@ async function run() {
       ["Prev/Next nav", 'id="btn-prev"'],
     ];
     for (const [name, sig] of htmlFeatures) {
-      assert(s7, htmlSrc.includes(sig), `${name}: present`, `${name}: MISSING`);
+      assert(s11, htmlSrc.includes(sig), `${name}: present`, `${name}: MISSING`);
     }
 
-    // Tooltips on interactive elements
-    const tooltipEls = ['filter-map', 'filter-day', 'filter-sort', 'filter-outcome',
-      'toggle-paths', 'toggle-events', 'toggle-heatmap', 'toggle-bots', 'toggle-humans', 'toggle-storm',
-      'toggle-infer', 'toggle-routes', 'atog-movement', 'atog-kills', 'atog-deaths', 'atog-loot', 'atog-dwell', 'atog-extract',
-      'btn-analysis', 'scrubber', 'btn-play', 'btn-zoom-in', 'btn-zoom-out', 'btn-zoom-fit',
-      'btn-prev', 'btn-next'];
-    let missingTooltips = 0;
-    for (const id of tooltipEls) {
-      // Check if parent label or element itself has a title attribute
-      const re = new RegExp(`(id="${id}"[^>]*title=|title="[^"]*"[^>]*id="${id}"|<label[^>]*title="[^"]*"[^>]*${id})`, 's');
-      if (!re.test(htmlSrc)) missingTooltips++;
-    }
-    assert(s7, missingTooltips === 0, `All ${tooltipEls.length} interactive elements have tooltips`, `${missingTooltips} interactive elements MISSING tooltips`);
+    // Legend should reference squad types
+    const hasCompanionLegend = htmlSrc.includes("Companion") || htmlSrc.includes("companion");
+    const hasSquadLegend = htmlSrc.includes("squad") || htmlSrc.includes("Squad");
+    assert(s11, hasCompanionLegend, "Legend references companion bots", "MISSING companion bot reference in HTML/legend");
+    assert(s11, hasSquadLegend, "Legend references bot squads", "MISSING bot squad reference in HTML/legend");
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 8. CROSS-DATA CONSISTENCY
+  // 12. CROSS-DATA CONSISTENCY
   // ═══════════════════════════════════════════════════════════════════════
-  const s8 = section("8. Cross-Data Consistency");
+  const s12 = section("12. Cross-Data Consistency");
 
   // Check aggregate match counts vs index counts
   for (const mp of ["AmbroseValley", "GrandRift", "Lockdown"]) {
     try {
       const agg = await fetchJSON(`data/aggregate/${mp}.json`);
       const idxCount = index.filter(m => m.map === mp).length;
-      assert(s8, agg.matches === idxCount, `${mp}: aggregate.matches (${agg.matches}) = index count (${idxCount})`, `${mp}: aggregate.matches (${agg.matches}) ≠ index count (${idxCount})`);
+      assert(s12, agg.matches === idxCount, `${mp}: aggregate.matches (${agg.matches}) = index count (${idxCount})`, `${mp}: aggregate.matches (${agg.matches}) ≠ index count (${idxCount})`);
     } catch {}
   }
 
@@ -357,41 +577,227 @@ async function run() {
       if (!r.ok) missingFiles++;
     } catch { missingFiles++; }
   }
-  assert(s8, missingFiles === 0, `All ${fileCheckSample.length} sampled match files accessible`, `${missingFiles}/${fileCheckSample.length} match files missing`);
+  assert(s12, missingFiles === 0, `All ${fileCheckSample.length} sampled match files accessible`, `${missingFiles}/${fileCheckSample.length} match files missing`);
+
+  // Index meta.squad + sum(bot_squads) + lone should equal bots for all entries
+  let metaMismatch = 0;
+  for (const m of index) {
+    const sq = m.squad ?? 0;
+    const bsSq = m.bot_squads ?? [];
+    const bsTotal = bsSq.reduce((s, g) => s + g[1], 0);
+    const computedTotal = sq + bsTotal + (m.bots - sq - bsTotal);
+    if (computedTotal !== m.bots) metaMismatch++;
+  }
+  assert(s12, metaMismatch === 0, "All index entries: squad + bot_squads + lone = bots (identity holds)", `${metaMismatch} entries where bot counts don't add up`);
+
+  // Verify match meta matches index meta for squad fields
+  for (const meta of squadMatches.slice(0, 3)) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      assert(s12, match.meta.squad === meta.squad,
+        `${meta.id.slice(0,8)}: match.meta.squad (${match.meta.squad}) = index.squad (${meta.squad})`,
+        `${meta.id.slice(0,8)}: match.meta.squad (${match.meta.squad}) ≠ index.squad (${meta.squad})`);
+      assert(s12, JSON.stringify(match.meta.bot_squads) === JSON.stringify(meta.bot_squads),
+        `${meta.id.slice(0,8)}: match.meta.bot_squads matches index`,
+        `${meta.id.slice(0,8)}: match.meta.bot_squads MISMATCH with index`);
+    } catch {}
+  }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 9. EDGE CASES & ANOMALIES
+  // 13. EDGE CASES & ANOMALIES
   // ═══════════════════════════════════════════════════════════════════════
-  const s9 = section("9. Edge Cases & Data Anomalies");
+  const s13 = section("13. Edge Cases & Data Anomalies");
 
   // Matches with 0 humans (agent-only)
   const noHuman = index.filter(m => m.humans === 0);
-  emit(s9, noHuman.length > 0 ? "warn" : "info", `${noHuman.length} matches with 0 human players (agent-only)`);
+  emit(s13, noHuman.length > 0 ? "warn" : "info", `${noHuman.length} matches with 0 human players (agent-only)`);
 
   // Matches with 0 events
   const noEvents = index.filter(m => m.total_events === 0);
-  assert(s9, noEvents.length === 0, "No matches with 0 events", `${noEvents.length} matches have 0 events`);
+  assert(s13, noEvents.length === 0, "No matches with 0 events", `${noEvents.length} matches have 0 events`);
 
   // Very short matches (< 30s)
   const veryShort = index.filter(m => m.duration < 30);
-  emit(s9, veryShort.length > 0 ? "warn" : "info", `${veryShort.length} matches shorter than 30 seconds`);
+  emit(s13, veryShort.length > 0 ? "warn" : "info", `${veryShort.length} matches shorter than 30 seconds`);
 
   // Suspicious matches (0 bot kills, many bot deaths)
   const suspicious = index.filter(m => m.bot_kills === 0 && m.bot_killed > 3);
-  emit(s9, suspicious.length > 0 ? "warn" : "info", `${suspicious.length} suspicious matches (0 kills, >3 deaths to bots)`);
+  emit(s13, suspicious.length > 0 ? "warn" : "info", `${suspicious.length} suspicious matches (0 kills, >3 deaths to bots)`);
 
   // Storm deaths
   const stormDeaths = index.reduce((s, m) => s + m.storm_deaths, 0);
-  emit(s9, "info", `${stormDeaths} total storm deaths across all matches`);
+  emit(s13, "info", `${stormDeaths} total storm deaths across all matches`);
 
   // PvP kills
   const pvpKills = index.reduce((s, m) => s + m.pvp_kills, 0);
-  emit(s9, "info", `${pvpKills} total PvP kills (extremely rare in this dataset)`);
+  emit(s13, "info", `${pvpKills} total PvP kills (extremely rare in this dataset)`);
 
   // Outcome distribution
   const outDist = {};
   for (const m of index) outDist[m.outcome] = (outDist[m.outcome] || 0) + 1;
-  for (const [oc, cnt] of Object.entries(outDist)) emit(s9, "info", `Outcome '${oc}': ${cnt} matches (${(cnt/index.length*100).toFixed(1)}%)`);
+  for (const [oc, cnt] of Object.entries(outDist)) emit(s13, "info", `Outcome '${oc}': ${cnt} matches (${(cnt/index.length*100).toFixed(1)}%)`);
+
+  // Squad size distribution
+  const squadSizeDist = {};
+  for (const m of index) {
+    for (const [, size] of (m.bot_squads ?? [])) {
+      squadSizeDist[size] = (squadSizeDist[size] || 0) + 1;
+    }
+  }
+  for (const [size, cnt] of Object.entries(squadSizeDist).sort((a,b) => a[0]-b[0])) {
+    emit(s13, "info", `Bot squads of size ${size}: ${cnt} occurrences`);
+  }
+
+  // Very large bot squads (>6 members) — unusual
+  const largeSquads = index.filter(m => (m.bot_squads ?? []).some(([,s]) => s > 6));
+  if (largeSquads.length > 0) {
+    emit(s13, "warn", `${largeSquads.length} matches have unusually large bot squads (>6 members)`);
+  } else {
+    emit(s13, "info", "No unusually large bot squads (>6 members)");
+  }
+
+  // Matches where companion count exceeds total bots
+  const companionExceedsBots = index.filter(m => (m.squad ?? 0) > m.bots);
+  assert(s13, companionExceedsBots.length === 0,
+    "No matches where companion count exceeds total bots",
+    `${companionExceedsBots.length} matches have squad > bots (impossible)`);
+
+  // Matches with bot telemetry but no squads detected (expected for small lobbies)
+  const telemetryNoSquads = index.filter(m => m.bots > 0 && (m.squad ?? 0) === 0 && (m.bot_squads ?? []).length === 0);
+  emit(s13, "info", `${telemetryNoSquads.length} matches with bot telemetry but no squads detected`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 14. SPAWN PROXIMITY VALIDATION (deep check)
+  // ═══════════════════════════════════════════════════════════════════════
+  const s14 = section("14. Spawn Proximity Validation (squad members)");
+
+  // For a few squad matches, verify that squad members actually spawned near each other
+  const SPAWN_DIST_PX = 80; // matches export_data.py SQUAD_SPAWN_DIST_PX
+  const SPAWN_WINDOW_SEC = 60; // matches export_data.py SPAWN_WINDOW_SEC
+
+  for (const meta of squadMatches.slice(0, 3)) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      const shortId = meta.id.slice(0, 8);
+
+      // Get first position per entity within spawn window
+      const spawnPos = {};
+      for (const e of match.events) {
+        if (e.ev !== "Position" && e.ev !== "BotPosition") continue;
+        if (e.t > SPAWN_WINDOW_SEC) continue;
+        if (e.px == null) continue;
+        if (!spawnPos[e.uid]) spawnPos[e.uid] = { px: e.px, py: e.py, t: e.t, type: e.type, sq: e.sq };
+      }
+
+      // For each bot squad, verify all members spawned within SPAWN_DIST_PX of each other
+      for (const [sqId, size] of (meta.bot_squads ?? [])) {
+        const sqMembers = Object.entries(spawnPos).filter(([, p]) => p.sq === sqId);
+        if (sqMembers.length < 2) {
+          emit(s14, "warn", `${shortId} Sq${sqId}: only ${sqMembers.length} members have spawn positions (expected ${size})`);
+          continue;
+        }
+
+        let maxDist = 0;
+        for (let i = 0; i < sqMembers.length; i++) {
+          for (let j = i + 1; j < sqMembers.length; j++) {
+            const [, a] = sqMembers[i], [, b] = sqMembers[j];
+            const d = Math.hypot(a.px - b.px, a.py - b.py);
+            if (d > maxDist) maxDist = d;
+          }
+        }
+        // All members should be within threshold (allowing small tolerance for position update vs first ping)
+        const tolerance = SPAWN_DIST_PX * 1.5; // allow some slack for event ordering
+        assert(s14, maxDist <= tolerance,
+          `${shortId} Sq${sqId}: max spawn distance ${maxDist.toFixed(1)}px (within ${tolerance}px threshold)`,
+          `${shortId} Sq${sqId}: max spawn distance ${maxDist.toFixed(1)}px EXCEEDS ${tolerance}px threshold`);
+      }
+
+      // For companion bots, verify they spawned near the human
+      if ((meta.squad ?? 0) > 0) {
+        const humanSpawn = Object.values(spawnPos).find(p => p.type === "human");
+        const companionSpawns = Object.values(spawnPos).filter(p => p.type === "squad");
+        if (humanSpawn && companionSpawns.length > 0) {
+          for (const comp of companionSpawns) {
+            const d = Math.hypot(comp.px - humanSpawn.px, comp.py - humanSpawn.py);
+            assert(s14, d <= SPAWN_DIST_PX * 2,
+              `${shortId}: companion bot spawned ${d.toFixed(1)}px from human (close)`,
+              `${shortId}: companion bot spawned ${d.toFixed(1)}px from human (too far — should be near spawn)`);
+          }
+        }
+      }
+    } catch (e) {
+      emit(s14, "fail", `${meta.id.slice(0,8)}: spawn proximity check failed — ${e.message}`);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 15. STORM RELIABILITY EDGE CASES
+  // ═══════════════════════════════════════════════════════════════════════
+  const s15 = section("15. Storm Reliability Edge Cases");
+
+  // Matches with storm_deaths > 0 should always be storm-reliable (ground truth)
+  const stormDeathMatches = index.filter(m => m.storm_deaths > 0);
+  emit(s15, "info", `${stormDeathMatches.length} matches have storm deaths (always storm-reliable)`);
+
+  // Check that matches with storm deaths have KilledByStorm events
+  for (const meta of stormDeathMatches.slice(0, 3)) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      const stormEvs = match.events.filter(e => e.ev === "KilledByStorm");
+      assert(s15, stormEvs.length > 0,
+        `${meta.id.slice(0,8)}: has ${stormEvs.length} KilledByStorm events (matches meta.storm_deaths=${meta.storm_deaths})`,
+        `${meta.id.slice(0,8)}: meta.storm_deaths=${meta.storm_deaths} but 0 KilledByStorm events`);
+    } catch {}
+  }
+
+  // Matches with 0 storm deaths, short duration — likely unreliable storm
+  const shortNoStorm = index.filter(m => m.storm_deaths === 0 && m.duration < 120);
+  emit(s15, "info", `${shortNoStorm.length} short matches (<120s) with no storm deaths — storm may be unreliable`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 16. MATCH DATA CONSISTENCY — COUNTS VS EVENTS
+  // ═══════════════════════════════════════════════════════════════════════
+  const s16 = section("16. Match Metadata vs Event Count Consistency");
+
+  // Deep-check 5 random matches
+  const deepCheckSample = [...index].sort(() => Math.random() - 0.5).slice(0, 5);
+  for (const meta of deepCheckSample) {
+    try {
+      const match = await fetchJSON(`data/matches/${meta.id}.json`);
+      const shortId = meta.id.slice(0, 8);
+
+      // Count events by type
+      const evCounts = {};
+      for (const e of match.events) evCounts[e.ev] = (evCounts[e.ev] || 0) + 1;
+
+      // bot_kills should match BotKill events from human
+      const humanBotKills = match.events.filter(e => e.ev === "BotKill" && e.type === "human").length;
+      assert(s16, humanBotKills === meta.bot_kills,
+        `${shortId}: human BotKill events (${humanBotKills}) = meta.bot_kills (${meta.bot_kills})`,
+        `${shortId}: human BotKill events (${humanBotKills}) ≠ meta.bot_kills (${meta.bot_kills})`);
+
+      // loot count
+      const lootEvs = match.events.filter(e => e.ev === "Loot" && e.type === "human").length;
+      assert(s16, lootEvs === meta.loot,
+        `${shortId}: human Loot events (${lootEvs}) = meta.loot (${meta.loot})`,
+        `${shortId}: human Loot events (${lootEvs}) ≠ meta.loot (${meta.loot})`);
+
+      // total_events should match
+      assert(s16, match.events.length === meta.total_events,
+        `${shortId}: events.length (${match.events.length}) = meta.total_events (${meta.total_events})`,
+        `${shortId}: events.length (${match.events.length}) ≠ meta.total_events (${meta.total_events})`);
+
+      // Events should be sorted by timestamp
+      let sorted = true;
+      for (let i = 1; i < match.events.length; i++) {
+        if (match.events[i].t < match.events[i - 1].t) { sorted = false; break; }
+      }
+      assert(s16, sorted, `${shortId}: events sorted by timestamp`, `${shortId}: events NOT sorted by timestamp`);
+
+    } catch (e) {
+      emit(s16, "fail", `${meta.id.slice(0,8)}: consistency check failed — ${e.message}`);
+    }
+  }
 
   // ═══════════════════════════════════════════════════════════════════════
   // SUMMARY

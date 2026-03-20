@@ -492,6 +492,38 @@ Cross-match inferred bot positions and patrol routes:
 
 ---
 
+## Major Trade-offs
+
+| Decision | What I chose | What I gave up | Why the trade was worth it |
+|---|---|---|---|
+| Vanilla JS + Canvas vs React + charting library | Vanilla JS | Component ecosystem, easier data binding | Zero build toolchain, instant Vercel deploy as a folder, full rendering control for interpolated paths and custom heatmaps |
+| Static JSON files vs a query database (DuckDB/SQLite) | Static JSON | Ad-hoc queries, server-side filtering | The access pattern is always "one match at a time" — static files are simpler, zero-dependency at runtime, and fit a ~15KB-per-match budget perfectly |
+| Offline pre-processing vs in-browser parsing | Offline pipeline | Live data updates | Parquet → JSON conversion in the browser would require a WASM runtime; the data is static anyway, so pre-processing costs nothing at serving time |
+| Per-match JSON split vs single large file | Split files | One network round-trip on load | A single 785-match JSON blob would be ~12MB; split files load in ~15KB on demand, keeping the sidebar instant and match loads fast |
+| Estimated storm ring vs no storm ring | Show estimate with reliability heuristic | Accuracy | The ring is cosmetically useful even when imprecise; the reliability flag (`isStormReliable()`) auto-hides it when the estimate is demonstrably wrong, avoiding misleading users |
+| Spawn-proximity squad detection vs no squad detection | Heuristic detection | Perfect accuracy | 93% of matches have no bot telemetry so perfect detection is impossible; spawn proximity in 80px radius gives useful signal in the 7% of matches that have data, with known false-positive risk documented |
+
+---
+
+## What I'd Do Differently With More Time
+
+**1. Add a proper backend for live data.**
+The offline pipeline works for a static dataset but breaks down the moment match data is updated. A lightweight API (FastAPI or a serverless function) querying the parquet files directly would let the tool serve live data without a re-export step.
+
+**2. Build a per-session funnel view.**
+The biggest analytical gap right now is the loot → survive → extract funnel. I'd add a session-level breakdown showing where in the core loop each player dropped off — this is the most directly actionable view for a Level Designer tuning difficulty.
+
+**3. Elevation-aware rendering.**
+The `y` coordinate exists in the raw data but is discarded in the 2D projection. On maps with vertical structure, fights on different floors overlap on the minimap. A floor-selector or side-elevation view would make kill clusters on multi-storey buildings interpretable.
+
+**4. Proper telemetry schema recommendations.**
+Instead of documenting limitations in markdown, I'd write a formal schema proposal: `Extraction` event, `BotSpawn`/`BotDespawn`, loot item identity, and server-authoritative storm geometry. The tool is currently capped by data it doesn't have access to; fixing the telemetry schema unlocks more value than any frontend feature.
+
+**5. Statistical confidence indicators on sparse data.**
+GrandRift's heatmaps look visually similar to AmbroseValley's but are based on 58 vs 563 matches. A sample-size badge per cell (e.g. greying out low-confidence cells) would stop a Level Designer from over-indexing on sparse signals.
+
+---
+
 ## Deployment
 
 Static site served from Vercel. No server-side logic at runtime.
